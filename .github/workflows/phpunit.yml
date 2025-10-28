@@ -1,0 +1,42 @@
+name: Run PHPUnit
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  phpunit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: [8.2]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          extensions: mbstring, xml, bcmath, gd, pcntl, pdo_mysql, pdo_sqlite
+          ini-values: post_max_size=256M, upload_max_filesize=256M
+
+      - name: Cache composer
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install Composer dependencies
+        run: composer install --no-progress --no-suggest --prefer-dist
+
+      - name: Generate APP_KEY
+        run: php artisan key:generate --ansi
+
+      - name: Run PHPUnit
+        run: vendor/bin/phpunit --configuration phpunit.xml --colors=always
