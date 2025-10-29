@@ -60,4 +60,34 @@ class UserFactory extends Factory
             $user->roles()->syncWithoutDetaching([$role->id]);
         });
     }
+
+    /**
+     * Create a user with editor role.
+     */
+    public function editor(): static
+    {
+        return $this->afterCreating(function (\App\Models\User $user) {
+            $role = \App\Models\Role::firstOrCreate(
+                ['name' => 'editor'],
+                ['description' => 'Editor with content management permissions']
+            );
+
+            $user->roles()->syncWithoutDetaching([$role->id]);
+        });
+    }
+
+    /**
+     * Create a basic user with default role.
+     */
+    public function basicUser(): static
+    {
+        return $this->afterCreating(function (\App\Models\User $user) {
+            $role = \App\Models\Role::firstOrCreate(
+                ['name' => 'user'],
+                ['description' => 'Regular user with basic access']
+            );
+
+            $user->roles()->syncWithoutDetaching([$role->id]);
+        });
+    }
 }

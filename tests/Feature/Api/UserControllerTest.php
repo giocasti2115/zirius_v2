@@ -18,9 +18,10 @@ class UserControllerTest extends TestCase
     {
         parent::setUp();
         
-        // Create an admin user for testing
-        $this->admin = User::factory()->admin()->create();
-        $this->token = $this->admin->createToken('test-token')->plainTextToken;
+        // Create an admin user for testing using the helper method
+        $adminData = $this->createAdminUserAndToken();
+        $this->admin = $adminData['user'];
+        $this->token = $adminData['token'];
     }
 
     public function test_can_list_users(): void
@@ -197,6 +198,74 @@ class UserControllerTest extends TestCase
     {
         $response = $this->getJson('/api/users');
         $response->assertStatus(401);
+    }
+
+    public function test_editor_can_view_but_not_modify_users(): void
+    {
+        $editorData = $this->createEditorUserAndToken();
+        $user = User::factory()->create();
+
+        // Editor can list users
+        $response = $this->withHeaders([
+            'Authorization' => 'Bearer ' . $editorData['token'],
+        ])->getJson('/api/users');
+        $response->assertOk();
+
+        // Editor can view specific user
+        $response = $this->withHeaders([
+            'Authorization' => 'Bearer ' . $editorData['token'],
+        ])->getJson("/api/users/{$user->id}");
+        $response->assertOk();
+
+        // Editor cannot create users
+        $response = $this->withHeaders([
+            'Authorization' => 'Bearer ' . $editorData['token'],
+        ])->postJson('/api/users', [
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => 'test@example.com',
+            'password' => 'password123',
+            'password_confirmation' => 'password123'
+        ]);
+        $response->assertForbidden();
+
+        // Editor cannot update users
+        $response = $this->withHeaders([
+            'Authorization' => 'Bearer ' . $editorData['token'],
+        ])->putJson("/api/users/{$user->id}", [
+            'first_name' => 'Updated Name'
+        ]);
+        $response->assertForbidden();
+
+        // Editor cannot delete users
+        $response = $this->withHeaders([
+            'Authorization' => 'Bearer ' . $editorData['token'],
+        ])->deleteJson("/api/users/{$user->id}");
+        $response->assertForbidden();
+    }
+
+    public function test_basic_user_can_only_view_own_profile(): void
+    {
+        $userData = $this->createBasicUserAndToken();
+        $otherUser = User::factory()->create();
+
+        // User can view their own profile
+        $response = $this->withHeaders([
+            'Authorization' => 'Bearer ' . $userData['token'],
+        ])->getJson("/api/users/{$userData['user']->id}");
+        $response->assertOk();
+
+        // User cannot view other users
+        $response = $this->withHeaders([
+            'Authorization' => 'Bearer ' . $userData['token'],
+        ])->getJson("/api/users/{$otherUser->id}");
+        $response->assertForbidden();
+
+        // User cannot list all users
+        $response = $this->withHeaders([
+            'Authorization' => 'Bearer ' . $userData['token'],
+        ])->getJson('/api/users');
+        $response->assertForbidden();
     }
 
     public function test_can_update_user_password(): void
