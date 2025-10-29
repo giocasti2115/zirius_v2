@@ -67,11 +67,7 @@ class UserFactory extends Factory
     public function editor(): static
     {
         return $this->afterCreating(function (\App\Models\User $user) {
-            $role = \App\Models\Role::firstOrCreate(
-                ['name' => 'editor'],
-                ['description' => 'Editor with content management permissions']
-            );
-
+            $role = \App\Models\Role::where('name', 'editor')->firstOrFail();
             $user->roles()->syncWithoutDetaching([$role->id]);
         });
     }

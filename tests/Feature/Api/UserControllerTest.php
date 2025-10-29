@@ -18,6 +18,9 @@ class UserControllerTest extends TestCase
     {
         parent::setUp();
         
+        // Seed roles and permissions
+        $this->artisan('db:seed', ['--class' => \Database\Seeders\RolePermissionSeeder::class]);
+        
         // Create an admin user for testing using the helper method
         $adminData = $this->createAdminUserAndToken();
         $this->admin = $adminData['user'];
