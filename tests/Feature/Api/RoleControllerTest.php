@@ -20,7 +20,7 @@ class RoleControllerTest extends TestCase
         parent::setUp();
         
         // Create an admin user for testing
-        $this->admin = User::factory()->create();
+        $this->admin = User::factory()->admin()->create();
         $this->token = $this->admin->createToken('test-token')->plainTextToken;
     }
 

@@ -20,6 +20,11 @@ class UserRepository
             });
         }
 
+        // Apply is_active filter when provided
+        if (array_key_exists('is_active', $params)) {
+            $query->where('is_active', (bool) $params['is_active']);
+        }
+
         return $query->with('roles')->paginate($perPage);
     }
 
