@@ -42,8 +42,12 @@ class RolePermissionSeeder extends Seeder
         $allPermIds = Permission::pluck('id')->toArray();
         $adminRole->permissions()->sync($allPermIds);
 
-        // Editor: allow viewing roles/permissions and updating users (example)
-        $editorPerms = Permission::whereIn('slug', ['view-roles','view-permissions','update-users'])->pluck('id')->toArray();
+        // Editor: allow viewing users/roles/permissions
+        $editorPerms = Permission::whereIn('slug', [
+            'view-users',
+            'view-roles',
+            'view-permissions'
+        ])->pluck('id')->toArray();
         $editorRole->permissions()->sync($editorPerms);
 
         // User: minimal permissions (view own profile is allowed by policy without explicit permission)

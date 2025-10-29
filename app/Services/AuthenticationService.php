@@ -28,13 +28,14 @@ class AuthenticationService
      */
     public function login(array $credentials): array
     {
-        if (!Auth::attempt($credentials)) {
+        $user = $this->userService->findByEmail($credentials['email'] ?? '');
+        
+        if (!$user || !\Hash::check($credentials['password'], $user->password)) {
             throw ValidationException::withMessages([
                 'email' => ['The provided credentials are incorrect.'],
             ]);
         }
 
-        $user = $this->userService->findByEmail($credentials['email'] ?? '');
         $token = $user->createToken('auth-token')->plainTextToken;
 
         return ['user' => $user, 'token' => $token];
