@@ -6,6 +6,22 @@ services:
     volumes:
       - ./:/var/www
     command: php artisan test
+    depends_on:
+      - zirius_db
+
+  zirius_db:
+    image: mysql:8.0
+    container_name: zirius_db
+    restart: always
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_DATABASE: zirius_db
+      MYSQL_USER: zirius
+      MYSQL_PASSWORD: zirius_password
+      MYSQL_ROOT_PASSWORD: root_password
+    volumes:
+      - db_data:/var/lib/mysql
 
 networks:
   zirius_network:
@@ -14,3 +30,6 @@ networks:
       driver: default
       config:
         - subnet: 172.28.0.0/16
+
+volumes:
+  db_data:

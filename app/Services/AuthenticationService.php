@@ -29,7 +29,7 @@ class AuthenticationService
     public function login(array $credentials): array
     {
         $user = $this->userService->findByEmail($credentials['email'] ?? '');
-        
+
         if (!$user || !\Hash::check($credentials['password'], $user->password)) {
             throw ValidationException::withMessages([
                 'email' => ['The provided credentials are incorrect.'],

@@ -20,7 +20,7 @@ class UserServiceTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        
+
         $this->userRepository = app(UserRepository::class);
         $this->userService = app(UserService::class);
     }
@@ -51,7 +51,7 @@ class UserServiceTest extends TestCase
     public function test_it_can_create_user_with_roles(): void
     {
         $role = Role::factory()->create(['name' => 'editor']);
-        
+
         $userData = [
             'first_name' => 'John',
             'last_name' => 'Doe',
@@ -70,7 +70,7 @@ class UserServiceTest extends TestCase
     public function test_it_can_update_user(): void
     {
         $user = User::factory()->create();
-        
+
         $updateData = [
             'first_name' => 'Updated Name',
             'email' => 'updated@example.com',

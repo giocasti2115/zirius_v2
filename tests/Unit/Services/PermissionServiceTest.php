@@ -19,7 +19,7 @@ class PermissionServiceTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        
+
         $this->permissionRepository = app(PermissionRepository::class);
         $this->permissionService = app(PermissionService::class);
     }
@@ -43,7 +43,7 @@ class PermissionServiceTest extends TestCase
     public function test_it_can_update_permission(): void
     {
         $permission = Permission::factory()->create();
-        
+
         $updateData = [
             'name' => 'Updated Permission',
             'slug' => 'updated-permission',
@@ -98,14 +98,14 @@ class PermissionServiceTest extends TestCase
     {
         $permission = Permission::factory()->create();
         $role = Role::factory()->create();
-        
+
         // Attach permission to role
         $role->permissions()->attach($permission);
         $this->assertTrue($role->permissions->contains($permission->id));
 
         // Delete permission
         $this->permissionService->delete($permission);
-        
+
         // The role should still exist but not have the permission
         $this->assertDatabaseHas('roles', ['id' => $role->id]);
         $this->assertDatabaseMissing('permission_role', ['permission_id' => $permission->id]);
@@ -115,7 +115,7 @@ class PermissionServiceTest extends TestCase
     {
         $permission = Permission::factory()->create();
         $originalCreatedAt = $permission->created_at;
-        
+
         $updateData = [
             'name' => 'Updated Name',
             'created_at' => now()->addDay() // This should be ignored

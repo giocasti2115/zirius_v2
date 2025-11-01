@@ -18,7 +18,7 @@ class PermissionControllerTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        
+
         // Create an admin user for testing
         $this->admin = User::factory()->admin()->create();
         $this->token = $this->admin->createToken('test-token')->plainTextToken;

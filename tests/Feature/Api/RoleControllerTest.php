@@ -18,7 +18,7 @@ class RoleControllerTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        
+
         // Create an admin user for testing
         $this->admin = User::factory()->admin()->create();
         $this->token = $this->admin->createToken('test-token')->plainTextToken;
@@ -49,7 +49,7 @@ class RoleControllerTest extends TestCase
     public function test_can_create_role(): void
     {
         $permissions = Permission::factory()->count(2)->create();
-        
+
         $roleData = [
             'name' => 'editor',
             'description' => 'Editor role',

@@ -17,10 +17,10 @@ class UserControllerTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        
+
         // Seed roles and permissions
         $this->artisan('db:seed', ['--class' => \Database\Seeders\RolePermissionSeeder::class]);
-        
+
         // Create an admin user for testing using the helper method
         $adminData = $this->createAdminUserAndToken();
         $this->admin = $adminData['user'];
@@ -57,7 +57,7 @@ class UserControllerTest extends TestCase
     public function test_can_create_user(): void
     {
         $role = Role::factory()->create();
-        
+
         $userData = [
             'first_name' => 'John',
             'last_name' => 'Doe',

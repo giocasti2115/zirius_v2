@@ -19,7 +19,7 @@ class RoleServiceTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        
+
         $this->roleRepository = app(RoleRepository::class);
         $this->roleService = app(RoleService::class);
     }
@@ -42,7 +42,7 @@ class RoleServiceTest extends TestCase
     public function test_it_can_create_role_with_permissions(): void
     {
         $permission = Permission::factory()->create(['name' => 'edit_content']);
-        
+
         $roleData = [
             'name' => 'editor',
             'description' => 'Editor role',
@@ -59,7 +59,7 @@ class RoleServiceTest extends TestCase
     public function test_it_can_update_role(): void
     {
         $role = Role::factory()->create();
-        
+
         $updateData = [
             'name' => 'updated_role',
             'description' => 'Updated description'
@@ -128,12 +128,12 @@ class RoleServiceTest extends TestCase
     {
         $role = Role::factory()->create();
         $permission = Permission::factory()->create();
-        
+
         $this->roleService->update($role, ['permissions' => [$permission->id]]);
         $this->assertCount(1, $role->fresh()->permissions);
 
         $this->roleService->delete($role);
-        
+
         // The permission should still exist but not be attached to any roles
         $this->assertDatabaseHas('permissions', ['id' => $permission->id]);
         $this->assertDatabaseMissing('permission_role', ['role_id' => $role->id]);

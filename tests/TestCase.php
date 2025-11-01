@@ -13,7 +13,7 @@ abstract class TestCase extends BaseTestCase
     {
         $admin = \App\Models\User::factory()->admin()->create();
         $token = $admin->createToken('test-token')->plainTextToken;
-        
+
         return ['user' => $admin, 'token' => $token];
     }
 
@@ -24,7 +24,7 @@ abstract class TestCase extends BaseTestCase
     {
         $editor = \App\Models\User::factory()->editor()->create();
         $token = $editor->createToken('test-token')->plainTextToken;
-        
+
         return ['user' => $editor, 'token' => $token];
     }
 
@@ -35,7 +35,7 @@ abstract class TestCase extends BaseTestCase
     {
         $user = \App\Models\User::factory()->basicUser()->create();
         $token = $user->createToken('test-token')->plainTextToken;
-        
+
         return ['user' => $user, 'token' => $token];
     }
 
@@ -51,7 +51,7 @@ abstract class TestCase extends BaseTestCase
         );
         $user->roles()->syncWithoutDetaching([$role->id]);
         $token = $user->createToken('test-token')->plainTextToken;
-        
+
         return ['user' => $user, 'token' => $token];
     }
 }
