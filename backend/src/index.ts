@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { errorHandler } from './middleware/errorHandler';
 import { notFoundHandler } from './middleware/notFoundHandler';
 import { requestLogger } from './middleware/requestLogger';
+import { setupSwagger } from './swagger/config';
 
 // Load environment variables
 dotenv.config();
@@ -29,6 +30,10 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging
 app.use(requestLogger);
+
+// Setup Swagger documentation
+setupSwagger(app);
+console.log('📚 Swagger documentation available at http://localhost:3002/api-docs');
 
 // Health check endpoint
 app.get('/health', (req, res) => {

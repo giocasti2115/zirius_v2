@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout código
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        
+    - name: Build Backend
+      working-directory: ./backend
+      run: |
+        npm ci
+        npm run build
+        
+    - name: Build Frontend
+      working-directory: ./frontend
+      run: |
+        npm ci
+        npm run build
+        
+    - name: Create Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        body: |
+          ## 🚀 Nueva Release de Zirius V2
+          
+          ### ✨ Cambios en esta versión:
+          - Backend Node.js + TypeScript
+          - Frontend Next.js + React
+          - Autenticación JWT
+          - Dashboard con estadísticas
+          
+          ### 📦 Archivos incluidos:
+          - Backend compilado
+          - Frontend optimizado
+          - Documentación API
+          
+          ### 🔧 Instalación:
+          1. Descargar los archivos
+          2. Configurar base de datos MySQL
+          3. Ejecutar migraciones
+          4. Iniciar servicios
+        draft: false
+        prerelease: false
