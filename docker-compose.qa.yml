@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # 🗄️ BASE DE DATOS QA
+  mysql_qa:
+    image: mysql:8.0
+    container_name: zirius_mysql_qa
+    environment:
+      MYSQL_ROOT_PASSWORD: qa_password_123
+      MYSQL_DATABASE: zirius_qa
+      MYSQL_USER: zirius_qa
+      MYSQL_PASSWORD: qa_password_123
+    volumes:
+      - mysql_data_qa:/var/lib/mysql
+      - ./database/init:/docker-entrypoint-initdb.d
+    ports:
+      - "3306:3306"
+    restart: unless-stopped
+    networks:
+      - zirius_qa_network
+
+  # 🔧 BACKEND QA
+  backend_qa:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: zirius_backend_qa
+    environment:
+      - NODE_ENV=qa
+      - DB_HOST=mysql_qa
+      - DB_PORT=3306
+      - DB_NAME=zirius_qa
+      - DB_USER=zirius_qa
+      - DB_PASSWORD=qa_password_123
+      - JWT_SECRET=qa_jwt_secret_temporal_2024
+      - CORS_ORIGIN=*
+      - PORT=5000
+      - DEBUG=true
+      - ENABLE_SWAGGER=true
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mysql_qa
+    restart: unless-stopped
+    networks:
+      - zirius_qa_network
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./logs:/app/logs
+
+  # 🎨 FRONTEND QA
+  frontend_qa:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: zirius_frontend_qa
+    environment:
+      - NODE_ENV=qa
+      - NEXT_PUBLIC_API_URL=http://TU_IP_PUBLICA:5000/api
+      - NEXT_PUBLIC_APP_URL=http://TU_IP_PUBLICA:3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend_qa
+    restart: unless-stopped
+    networks:
+      - zirius_qa_network
+
+volumes:
+  mysql_data_qa:
+    driver: local
+
+networks:
+  zirius_qa_network:
+    driver: bridge
