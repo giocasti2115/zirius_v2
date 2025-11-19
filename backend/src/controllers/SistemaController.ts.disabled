@@ -1,0 +1,665 @@
+import { Request, Response } from 'express';
+import { DatabaseConnection } from '../config/database';
+import { logger } from '../utils/logger';
+import { ResultSetHeader, RowDataPacket } from 'mysql2';
+
+interface ConfiguracionRespaldo extends RowDataPacket {
+  id: number;
+  nombre: string;
+  descripcion?: string;
+  frecuencia: 'diario' | 'semanal' | 'mensual';
+  hora_ejecucion: string;
+  dias_semana?: string;
+  dia_mes?: number;
+  retener_dias: number;
+  compresion: boolean;
+  tablas_incluir: 'todas' | 'seleccionadas';
+  tablas_seleccionadas?: string;
+  activo: boolean;
+  ultimo_respaldo?: Date;
+  proximo_respaldo?: Date;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface Respaldo extends RowDataPacket {
+  id: number;
+  nombre: string;
+  tipo: 'automatico' | 'manual';
+  estado: 'completado' | 'en_progreso' | 'error' | 'cancelado';
+  tamaño_mb: number;
+  fecha_creacion: Date;
+  fecha_inicio?: Date;
+  fecha_fin?: Date;
+  duracion_segundos?: number;
+  archivo_path: string;
+  descripcion?: string;
+  tablas_incluidas: string;
+  compresion: boolean;
+  created_by?: number;
+  error_mensaje?: string;
+}
+
+interface LogEntry extends RowDataPacket {
+  id: number;
+  timestamp: Date;
+  nivel: 'info' | 'warning' | 'error' | 'debug' | 'success';
+  modulo: string;
+  usuario?: string;
+  ip_address?: string;
+  accion: string;
+  descripcion: string;
+  detalles?: string;
+  request_id?: string;
+  duracion_ms?: number;
+}
+
+interface PlantillaNotificacion extends RowDataPacket {
+  id: number;
+  nombre: string;
+  tipo: 'email' | 'sms' | 'push' | 'sistema';
+  evento: string;
+  asunto?: string;
+  contenido: string;
+  variables_disponibles: string;
+  activa: boolean;
+  created_by: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface ConfiguracionNotificacion extends RowDataPacket {
+  id: number;
+  usuario_id?: number;
+  usuario_email?: string;
+  evento: string;
+  canales: string;
+  activo: boolean;
+  horario_inicio?: string;
+  horario_fin?: string;
+  dias_semana?: string;
+  frecuencia_maxima?: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface NotificacionEnviada extends RowDataPacket {
+  id: number;
+  plantilla_id: number;
+  destinatario: string;
+  canal: 'email' | 'sms' | 'push' | 'sistema';
+  estado: 'enviado' | 'pendiente' | 'error' | 'leido';
+  fecha_envio: Date;
+  fecha_leido?: Date;
+  error_mensaje?: string;
+  datos_contexto?: string;
+}
+
+export class SistemaController {
+  private db: DatabaseConnection;
+
+  constructor() {
+    this.db = DatabaseConnection.getInstance();
+  }
+
+  // ====================== RESPALDOS ======================
+  
+  async getConfiguracionesRespaldo(req: Request, res: Response): Promise<void> {
+    try {
+      const { activo = '' } = req.query;
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (activo !== '') {
+        whereClause += ' AND activo = ?';
+        params.push(activo === 'true');
+      }
+
+      const query = `
+        SELECT * FROM configuraciones_respaldo 
+        ${whereClause}
+        ORDER BY created_at DESC
+      `;
+
+      const [rows] = await this.db.execute(query, params);
+
+      res.json({
+        success: true,
+        data: rows
+      });
+    } catch (error) {
+      logger.error('Error getting configuraciones respaldo:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  async createConfiguracionRespaldo(req: Request, res: Response): Promise<void> {
+    try {
+      const {
+        nombre,
+        descripcion,
+        frecuencia,
+        hora_ejecucion,
+        dias_semana,
+        dia_mes,
+        retener_dias,
+        compresion,
+        tablas_incluir,
+        tablas_seleccionadas
+      } = req.body;
+
+      if (!nombre || !frecuencia || !hora_ejecucion) {
+        res.status(400).json({
+          success: false,
+          message: 'Los campos nombre, frecuencia y hora_ejecucion son obligatorios'
+        });
+        return;
+      }
+
+      const query = `
+        INSERT INTO configuraciones_respaldo (
+          nombre, descripcion, frecuencia, hora_ejecucion, dias_semana,
+          dia_mes, retener_dias, compresion, tablas_incluir, tablas_seleccionadas
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+
+      const [result] = await this.db.execute(query, [
+        nombre,
+        descripcion || null,
+        frecuencia,
+        hora_ejecucion,
+        dias_semana ? JSON.stringify(dias_semana) : null,
+        dia_mes || null,
+        retener_dias || 30,
+        Boolean(compresion),
+        tablas_incluir || 'todas',
+        tablas_seleccionadas ? JSON.stringify(tablas_seleccionadas) : null
+      ]);
+
+      const insertId = (result as ResultSetHeader).insertId;
+
+      const [newRecord] = await this.db.execute(
+        'SELECT * FROM configuraciones_respaldo WHERE id = ?',
+        [insertId]
+      );
+
+      res.status(201).json({
+        success: true,
+        message: 'Configuración de respaldo creada exitosamente',
+        data: (newRecord as ConfiguracionRespaldo[])[0]
+      });
+    } catch (error) {
+      logger.error('Error creating configuracion respaldo:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  async getRespaldos(req: Request, res: Response): Promise<void> {
+    try {
+      const { page = 1, limit = 20, tipo = '', estado = '' } = req.query;
+      const offset = (Number(page) - 1) * Number(limit);
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (tipo) {
+        whereClause += ' AND tipo = ?';
+        params.push(tipo);
+      }
+
+      if (estado) {
+        whereClause += ' AND estado = ?';
+        params.push(estado);
+      }
+
+      const countQuery = `SELECT COUNT(*) as total FROM respaldos ${whereClause}`;
+      const dataQuery = `
+        SELECT r.*, u.nombre as created_by_name
+        FROM respaldos r
+        LEFT JOIN usuarios u ON r.created_by = u.id
+        ${whereClause}
+        ORDER BY r.fecha_creacion DESC
+        LIMIT ? OFFSET ?
+      `;
+
+      params.push(Number(limit), offset);
+
+      const [countResult] = await this.db.execute(countQuery, params.slice(0, params.length - 2));
+      const [rows] = await this.db.execute(dataQuery, params);
+
+      const total = (countResult as any[])[0].total;
+      const totalPages = Math.ceil(total / Number(limit));
+
+      res.json({
+        success: true,
+        data: rows,
+        pagination: {
+          page: Number(page),
+          limit: Number(limit),
+          total,
+          totalPages,
+          hasNext: Number(page) < totalPages,
+          hasPrev: Number(page) > 1
+        }
+      });
+    } catch (error) {
+      logger.error('Error getting respaldos:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  async createRespaldoManual(req: Request, res: Response): Promise<void> {
+    try {
+      const {
+        nombre,
+        descripcion,
+        tablas_incluir,
+        tablas_seleccionadas,
+        compresion
+      } = req.body;
+
+      const userId = (req as any).user?.id;
+
+      if (!nombre) {
+        res.status(400).json({
+          success: false,
+          message: 'El campo nombre es obligatorio'
+        });
+        return;
+      }
+
+      // Crear registro del respaldo
+      const query = `
+        INSERT INTO respaldos (
+          nombre, tipo, estado, descripcion, tablas_incluidas,
+          compresion, archivo_path, created_by
+        ) VALUES (?, 'manual', 'en_progreso', ?, ?, ?, ?, ?)
+      `;
+
+      const fechaActual = new Date();
+      const archivoPath = `/backups/manual_${fechaActual.getTime()}.sql${compresion ? '.gz' : ''}`;
+
+      const [result] = await this.db.execute(query, [
+        nombre,
+        descripcion || null,
+        tablas_seleccionadas ? JSON.stringify(tablas_seleccionadas) : JSON.stringify(['todas']),
+        Boolean(compresion),
+        archivoPath,
+        userId
+      ]);
+
+      const insertId = (result as ResultSetHeader).insertId;
+
+      // TODO: Aquí se ejecutaría el proceso real de respaldo en background
+      // Por ahora simulamos que se inicia el proceso
+
+      const [newRecord] = await this.db.execute(
+        'SELECT * FROM respaldos WHERE id = ?',
+        [insertId]
+      );
+
+      res.status(201).json({
+        success: true,
+        message: 'Respaldo manual iniciado exitosamente',
+        data: (newRecord as Respaldo[])[0]
+      });
+    } catch (error) {
+      logger.error('Error creating respaldo manual:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // ====================== LOGS ======================
+  
+  async getLogs(req: Request, res: Response): Promise<void> {
+    try {
+      const { 
+        page = 1, 
+        limit = 50, 
+        nivel = '', 
+        modulo = '', 
+        usuario = '', 
+        fecha_inicio = '', 
+        fecha_fin = '' 
+      } = req.query;
+
+      const offset = (Number(page) - 1) * Number(limit);
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (nivel) {
+        whereClause += ' AND nivel = ?';
+        params.push(nivel);
+      }
+
+      if (modulo) {
+        whereClause += ' AND modulo = ?';
+        params.push(modulo);
+      }
+
+      if (usuario) {
+        whereClause += ' AND usuario LIKE ?';
+        params.push(`%${usuario}%`);
+      }
+
+      if (fecha_inicio) {
+        whereClause += ' AND timestamp >= ?';
+        params.push(fecha_inicio);
+      }
+
+      if (fecha_fin) {
+        whereClause += ' AND timestamp <= ?';
+        params.push(fecha_fin);
+      }
+
+      const countQuery = `SELECT COUNT(*) as total FROM logs ${whereClause}`;
+      const dataQuery = `
+        SELECT * FROM logs 
+        ${whereClause}
+        ORDER BY timestamp DESC
+        LIMIT ? OFFSET ?
+      `;
+
+      params.push(Number(limit), offset);
+
+      const [countResult] = await this.db.execute(countQuery, params.slice(0, params.length - 2));
+      const [rows] = await this.db.execute(dataQuery, params);
+
+      const total = (countResult as any[])[0].total;
+      const totalPages = Math.ceil(total / Number(limit));
+
+      res.json({
+        success: true,
+        data: rows,
+        pagination: {
+          page: Number(page),
+          limit: Number(limit),
+          total,
+          totalPages,
+          hasNext: Number(page) < totalPages,
+          hasPrev: Number(page) > 1
+        }
+      });
+    } catch (error) {
+      logger.error('Error getting logs:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  async getLogStats(req: Request, res: Response): Promise<void> {
+    try {
+      const query = `
+        SELECT 
+          modulo,
+          COUNT(*) as total,
+          SUM(CASE WHEN nivel = 'error' THEN 1 ELSE 0 END) as errores,
+          SUM(CASE WHEN nivel = 'warning' THEN 1 ELSE 0 END) as warnings,
+          SUM(CASE WHEN nivel = 'info' THEN 1 ELSE 0 END) as info
+        FROM logs 
+        WHERE timestamp >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+        GROUP BY modulo
+        ORDER BY total DESC
+      `;
+
+      const [rows] = await this.db.execute(query);
+
+      res.json({
+        success: true,
+        data: rows
+      });
+    } catch (error) {
+      logger.error('Error getting log stats:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // ====================== NOTIFICACIONES ======================
+  
+  async getPlantillasNotificacion(req: Request, res: Response): Promise<void> {
+    try {
+      const { tipo = '', evento = '', activa = '' } = req.query;
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (tipo) {
+        whereClause += ' AND tipo = ?';
+        params.push(tipo);
+      }
+
+      if (evento) {
+        whereClause += ' AND evento = ?';
+        params.push(evento);
+      }
+
+      if (activa !== '') {
+        whereClause += ' AND activa = ?';
+        params.push(activa === 'true');
+      }
+
+      const query = `
+        SELECT pn.*, u.nombre as created_by_name
+        FROM plantillas_notificacion pn
+        LEFT JOIN usuarios u ON pn.created_by = u.id
+        ${whereClause}
+        ORDER BY pn.created_at DESC
+      `;
+
+      const [rows] = await this.db.execute(query, params);
+
+      res.json({
+        success: true,
+        data: rows
+      });
+    } catch (error) {
+      logger.error('Error getting plantillas notificacion:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  async createPlantillaNotificacion(req: Request, res: Response): Promise<void> {
+    try {
+      const {
+        nombre,
+        tipo,
+        evento,
+        asunto,
+        contenido,
+        variables_disponibles
+      } = req.body;
+
+      const userId = (req as any).user?.id;
+
+      if (!nombre || !tipo || !evento || !contenido) {
+        res.status(400).json({
+          success: false,
+          message: 'Los campos nombre, tipo, evento y contenido son obligatorios'
+        });
+        return;
+      }
+
+      const query = `
+        INSERT INTO plantillas_notificacion (
+          nombre, tipo, evento, asunto, contenido, variables_disponibles, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `;
+
+      const [result] = await this.db.execute(query, [
+        nombre,
+        tipo,
+        evento,
+        asunto || null,
+        contenido,
+        variables_disponibles ? JSON.stringify(variables_disponibles) : null,
+        userId
+      ]);
+
+      const insertId = (result as ResultSetHeader).insertId;
+
+      const [newRecord] = await this.db.execute(
+        'SELECT * FROM plantillas_notificacion WHERE id = ?',
+        [insertId]
+      );
+
+      res.status(201).json({
+        success: true,
+        message: 'Plantilla de notificación creada exitosamente',
+        data: (newRecord as PlantillaNotificacion[])[0]
+      });
+    } catch (error) {
+      logger.error('Error creating plantilla notificacion:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  async getConfiguracionesNotificacion(req: Request, res: Response): Promise<void> {
+    try {
+      const { usuario_id = '', evento = '', activo = '' } = req.query;
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (usuario_id) {
+        whereClause += ' AND usuario_id = ?';
+        params.push(usuario_id);
+      }
+
+      if (evento) {
+        whereClause += ' AND evento = ?';
+        params.push(evento);
+      }
+
+      if (activo !== '') {
+        whereClause += ' AND activo = ?';
+        params.push(activo === 'true');
+      }
+
+      const query = `
+        SELECT cn.*, u.nombre as usuario_nombre, u.email as usuario_email
+        FROM configuraciones_notificacion cn
+        LEFT JOIN usuarios u ON cn.usuario_id = u.id
+        ${whereClause}
+        ORDER BY cn.created_at DESC
+      `;
+
+      const [rows] = await this.db.execute(query, params);
+
+      res.json({
+        success: true,
+        data: rows
+      });
+    } catch (error) {
+      logger.error('Error getting configuraciones notificacion:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  async getHistorialNotificaciones(req: Request, res: Response): Promise<void> {
+    try {
+      const { 
+        page = 1, 
+        limit = 20, 
+        canal = '', 
+        estado = '',
+        fecha_inicio = '',
+        fecha_fin = ''
+      } = req.query;
+
+      const offset = (Number(page) - 1) * Number(limit);
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (canal) {
+        whereClause += ' AND ne.canal = ?';
+        params.push(canal);
+      }
+
+      if (estado) {
+        whereClause += ' AND ne.estado = ?';
+        params.push(estado);
+      }
+
+      if (fecha_inicio) {
+        whereClause += ' AND ne.fecha_envio >= ?';
+        params.push(fecha_inicio);
+      }
+
+      if (fecha_fin) {
+        whereClause += ' AND ne.fecha_envio <= ?';
+        params.push(fecha_fin);
+      }
+
+      const countQuery = `
+        SELECT COUNT(*) as total 
+        FROM notificaciones_enviadas ne 
+        ${whereClause}
+      `;
+
+      const dataQuery = `
+        SELECT ne.*, pn.nombre as plantilla_nombre
+        FROM notificaciones_enviadas ne
+        LEFT JOIN plantillas_notificacion pn ON ne.plantilla_id = pn.id
+        ${whereClause}
+        ORDER BY ne.fecha_envio DESC
+        LIMIT ? OFFSET ?
+      `;
+
+      params.push(Number(limit), offset);
+
+      const [countResult] = await this.db.execute(countQuery, params.slice(0, params.length - 2));
+      const [rows] = await this.db.execute(dataQuery, params);
+
+      const total = (countResult as any[])[0].total;
+      const totalPages = Math.ceil(total / Number(limit));
+
+      res.json({
+        success: true,
+        data: rows,
+        pagination: {
+          page: Number(page),
+          limit: Number(limit),
+          total,
+          totalPages,
+          hasNext: Number(page) < totalPages,
+          hasPrev: Number(page) > 1
+        }
+      });
+    } catch (error) {
+      logger.error('Error getting historial notificaciones:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+}

@@ -1,0 +1,825 @@
+import { Router } from 'express';
+import { pool } from '../../config/database';
+import { logger } from '../../utils/logger';
+
+const router = Router();
+
+/**
+ * @swagger
+ * /api/real/generales/usuarios:
+ *   get:
+ *     summary: Obtener todos los usuarios del sistema
+ *     tags: [Generales]
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Página actual
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 50
+ *         description: Usuarios por página
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Buscar por nombre, email o documento
+ *       - in: query
+ *         name: rol
+ *         schema:
+ *           type: string
+ *         description: Filtrar por rol
+ *       - in: query
+ *         name: estado
+ *         schema:
+ *           type: string
+ *           enum: [activo, inactivo]
+ *         description: Filtrar por estado
+ *     responses:
+ *       200:
+ *         description: Lista de usuarios obtenida exitosamente
+ */
+router.get('/usuarios', async (req, res) => {
+  try {
+    const { page = 1, limit = 50, search, rol, estado } = req.query;
+    const offset = (parseInt(page as string) - 1) * parseInt(limit as string);
+    
+    let query = `
+      SELECT 
+        u.id,
+        u.nombre,
+        u.apellido,
+        u.email,
+        u.documento,
+        u.telefono,
+        u.rol,
+        u.estado,
+        u.fecha_creacion,
+        u.ultimo_acceso,
+        u.avatar,
+        COUNT(s.id) as solicitudes_creadas,
+        COUNT(v.id) as visitas_asignadas
+      FROM usuarios u
+      LEFT JOIN solicitudes s ON u.id = s.creador_id
+      LEFT JOIN visitas v ON u.id = v.responsable_id
+      WHERE 1=1
+    `;
+    
+    const params: any[] = [];
+    
+    if (search) {
+      query += ` AND (u.nombre LIKE ? OR u.apellido LIKE ? OR u.email LIKE ? OR u.documento LIKE ?)`;
+      const searchTerm = `%${search}%`;
+      params.push(searchTerm, searchTerm, searchTerm, searchTerm);
+    }
+    
+    if (rol) {
+      query += ` AND u.rol = ?`;
+      params.push(rol);
+    }
+    
+    if (estado) {
+      query += ` AND u.estado = ?`;
+      params.push(estado);
+    }
+    
+    query += `
+      GROUP BY u.id
+      ORDER BY u.nombre ASC, u.apellido ASC
+      LIMIT ? OFFSET ?
+    `;
+    params.push(parseInt(limit as string), offset);
+    
+    const [usuarios] = await pool.execute(query, params);
+    
+    // Contar total para paginación
+    let countQuery = `
+      SELECT COUNT(DISTINCT u.id) as total
+      FROM usuarios u
+      WHERE 1=1
+    `;
+    
+    const countParams = params.slice(0, -2); // Quitar LIMIT y OFFSET
+    if (search) {
+      countQuery += ` AND (u.nombre LIKE ? OR u.apellido LIKE ? OR u.email LIKE ? OR u.documento LIKE ?)`;
+    }
+    if (rol) {
+      countQuery += ` AND u.rol = ?`;
+    }
+    if (estado) {
+      countQuery += ` AND u.estado = ?`;
+    }
+    
+    const [countResult] = await pool.execute(countQuery, countParams);
+    const total = (countResult as any[])[0].total;
+    
+    logger.info(`Usuarios obtenidos: ${(usuarios as any[]).length} de ${total}`);
+    
+    res.json({
+      success: true,
+      data: {
+        usuarios: usuarios,
+        pagination: {
+          page: parseInt(page as string),
+          limit: parseInt(limit as string),
+          total,
+          totalPages: Math.ceil(total / parseInt(limit as string))
+        }
+      }
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo usuarios:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/generales/usuarios/{id}:
+ *   get:
+ *     summary: Obtener usuario por ID
+ *     tags: [Generales]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Usuario obtenido exitosamente
+ *       404:
+ *         description: Usuario no encontrado
+ */
+router.get('/usuarios/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const query = `
+      SELECT 
+        u.id,
+        u.nombre,
+        u.apellido,
+        u.email,
+        u.documento,
+        u.telefono,
+        u.rol,
+        u.estado,
+        u.fecha_creacion,
+        u.ultimo_acceso,
+        u.avatar,
+        u.configuracion_notificaciones,
+        COUNT(DISTINCT s.id) as total_solicitudes,
+        COUNT(DISTINCT v.id) as total_visitas,
+        COUNT(DISTINCT o.id) as total_ordenes
+      FROM usuarios u
+      LEFT JOIN solicitudes s ON u.id = s.creador_id
+      LEFT JOIN visitas v ON u.id = v.responsable_id
+      LEFT JOIN ordenes o ON u.id = o.tecnico_asignado_id
+      WHERE u.id = ?
+      GROUP BY u.id
+    `;
+    
+    const [usuarios] = await pool.execute(query, [id]);
+    
+    if ((usuarios as any[]).length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Usuario no encontrado'
+      });
+    }
+    
+    logger.info(`Usuario obtenido: ID ${id}`);
+    
+    res.json({
+      success: true,
+      data: (usuarios as any[])[0]
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo usuario:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/generales/usuarios:
+ *   post:
+ *     summary: Crear nuevo usuario
+ *     tags: [Generales]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - nombre
+ *               - apellido
+ *               - email
+ *               - documento
+ *               - rol
+ *             properties:
+ *               nombre:
+ *                 type: string
+ *               apellido:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               documento:
+ *                 type: string
+ *               telefono:
+ *                 type: string
+ *               rol:
+ *                 type: string
+ *                 enum: [admin, coordinador, tecnico, analista, comercial]
+ *               clave:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Usuario creado exitosamente
+ */
+router.post('/usuarios', async (req, res) => {
+  try {
+    const { nombre, apellido, email, documento, telefono, rol, clave } = req.body;
+    
+    // Validar campos requeridos
+    if (!nombre || !apellido || !email || !documento || !rol) {
+      return res.status(400).json({
+        success: false,
+        message: 'Todos los campos requeridos deben ser proporcionados'
+      });
+    }
+    
+    // Verificar si el email ya existe
+    const [existingUser] = await pool.execute(
+      'SELECT id FROM usuarios WHERE email = ? OR documento = ?',
+      [email, documento]
+    );
+    
+    if ((existingUser as any[]).length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ya existe un usuario con ese email o documento'
+      });
+    }
+    
+    const query = `
+      INSERT INTO usuarios (
+        nombre, apellido, email, documento, telefono, rol, clave, estado
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'activo')
+    `;
+    
+    const [result] = await pool.execute(query, [
+      nombre, apellido, email, documento, telefono, rol, clave || 'temporal123'
+    ]);
+    
+    const insertId = (result as any).insertId;
+    
+    logger.info(`Usuario creado: ID ${insertId}`);
+    
+    res.status(201).json({
+      success: true,
+      message: 'Usuario creado exitosamente',
+      data: { id: insertId }
+    });
+    
+  } catch (error) {
+    logger.error('Error creando usuario:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/generales/usuarios/{id}:
+ *   put:
+ *     summary: Actualizar usuario
+ *     tags: [Generales]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               nombre:
+ *                 type: string
+ *               apellido:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *               telefono:
+ *                 type: string
+ *               rol:
+ *                 type: string
+ *               estado:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Usuario actualizado exitosamente
+ */
+router.put('/usuarios/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nombre, apellido, email, telefono, rol, estado } = req.body;
+    
+    const query = `
+      UPDATE usuarios 
+      SET nombre = ?, apellido = ?, email = ?, telefono = ?, rol = ?, estado = ?
+      WHERE id = ?
+    `;
+    
+    const [result] = await pool.execute(query, [
+      nombre, apellido, email, telefono, rol, estado, id
+    ]);
+    
+    if ((result as any).affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Usuario no encontrado'
+      });
+    }
+    
+    logger.info(`Usuario actualizado: ID ${id}`);
+    
+    res.json({
+      success: true,
+      message: 'Usuario actualizado exitosamente'
+    });
+    
+  } catch (error) {
+    logger.error('Error actualizando usuario:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/generales/usuarios/{id}:
+ *   delete:
+ *     summary: Eliminar usuario (cambiar estado a inactivo)
+ *     tags: [Generales]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Usuario eliminado exitosamente
+ */
+router.delete('/usuarios/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const query = `UPDATE usuarios SET estado = 'inactivo' WHERE id = ?`;
+    
+    const [result] = await pool.execute(query, [id]);
+    
+    if ((result as any).affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Usuario no encontrado'
+      });
+    }
+    
+    logger.info(`Usuario eliminado: ID ${id}`);
+    
+    res.json({
+      success: true,
+      message: 'Usuario eliminado exitosamente'
+    });
+    
+  } catch (error) {
+    logger.error('Error eliminando usuario:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/generales/tipos-equipos:
+ *   get:
+ *     summary: Obtener todos los tipos de equipos
+ *     tags: [Generales]
+ *     responses:
+ *       200:
+ *         description: Lista de tipos de equipos
+ */
+router.get('/tipos-equipos', async (req, res) => {
+  try {
+    const { search, activo } = req.query;
+    
+    let query = `
+      SELECT 
+        te.id,
+        te.nombre,
+        te.descripcion,
+        te.codigo,
+        te.categoria,
+        te.activo,
+        COUNT(e.id) as total_equipos,
+        te.fecha_creacion
+      FROM tipos_equipos te
+      LEFT JOIN equipos e ON te.id = e.tipo_equipo_id
+      WHERE 1=1
+    `;
+    
+    const params: any[] = [];
+    
+    if (search) {
+      query += ` AND (te.nombre LIKE ? OR te.descripcion LIKE ? OR te.codigo LIKE ?)`;
+      const searchTerm = `%${search}%`;
+      params.push(searchTerm, searchTerm, searchTerm);
+    }
+    
+    if (activo !== undefined) {
+      query += ` AND te.activo = ?`;
+      params.push(activo === '1' || activo === 'true');
+    }
+    
+    query += `
+      GROUP BY te.id
+      ORDER BY te.nombre ASC
+    `;
+    
+    const [tipos] = await pool.execute(query, params);
+    
+    logger.info(`Tipos de equipos obtenidos: ${(tipos as any[]).length}`);
+    
+    res.json({
+      success: true,
+      data: tipos
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo tipos de equipos:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/generales/tipos-equipos:
+ *   post:
+ *     summary: Crear nuevo tipo de equipo
+ *     tags: [Generales]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - nombre
+ *               - codigo
+ *             properties:
+ *               nombre:
+ *                 type: string
+ *               descripcion:
+ *                 type: string
+ *               codigo:
+ *                 type: string
+ *               categoria:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Tipo de equipo creado exitosamente
+ */
+router.post('/tipos-equipos', async (req, res) => {
+  try {
+    const { nombre, descripcion, codigo, categoria } = req.body;
+    
+    if (!nombre || !codigo) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nombre y código son requeridos'
+      });
+    }
+    
+    const query = `
+      INSERT INTO tipos_equipos (nombre, descripcion, codigo, categoria, activo)
+      VALUES (?, ?, ?, ?, 1)
+    `;
+    
+    const [result] = await pool.execute(query, [nombre, descripcion, codigo, categoria]);
+    
+    logger.info(`Tipo de equipo creado: ${nombre}`);
+    
+    res.status(201).json({
+      success: true,
+      message: 'Tipo de equipo creado exitosamente',
+      data: { id: (result as any).insertId }
+    });
+    
+  } catch (error) {
+    logger.error('Error creando tipo de equipo:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/generales/marcas:
+ *   get:
+ *     summary: Obtener todas las marcas de equipos
+ *     tags: [Generales]
+ *     responses:
+ *       200:
+ *         description: Lista de marcas
+ */
+router.get('/marcas', async (req, res) => {
+  try {
+    const { search, activo } = req.query;
+    
+    let query = `
+      SELECT 
+        m.id,
+        m.nombre,
+        m.descripcion,
+        m.pais_origen,
+        m.activo,
+        COUNT(e.id) as total_equipos,
+        m.fecha_creacion
+      FROM marcas m
+      LEFT JOIN equipos e ON m.nombre = e.marca
+      WHERE 1=1
+    `;
+    
+    const params: any[] = [];
+    
+    if (search) {
+      query += ` AND (m.nombre LIKE ? OR m.descripcion LIKE ?)`;
+      const searchTerm = `%${search}%`;
+      params.push(searchTerm, searchTerm);
+    }
+    
+    if (activo !== undefined) {
+      query += ` AND m.activo = ?`;
+      params.push(activo === '1' || activo === 'true');
+    }
+    
+    query += `
+      GROUP BY m.id
+      ORDER BY m.nombre ASC
+    `;
+    
+    const [marcas] = await pool.execute(query, params);
+    
+    logger.info(`Marcas obtenidas: ${(marcas as any[]).length}`);
+    
+    res.json({
+      success: true,
+      data: marcas
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo marcas:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/generales/marcas:
+ *   post:
+ *     summary: Crear nueva marca
+ *     tags: [Generales]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - nombre
+ *             properties:
+ *               nombre:
+ *                 type: string
+ *               descripcion:
+ *                 type: string
+ *               pais_origen:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Marca creada exitosamente
+ */
+router.post('/marcas', async (req, res) => {
+  try {
+    const { nombre, descripcion, pais_origen } = req.body;
+    
+    if (!nombre) {
+      return res.status(400).json({
+        success: false,
+        message: 'El nombre es requerido'
+      });
+    }
+    
+    const query = `
+      INSERT INTO marcas (nombre, descripcion, pais_origen, activo)
+      VALUES (?, ?, ?, 1)
+    `;
+    
+    const [result] = await pool.execute(query, [nombre, descripcion, pais_origen]);
+    
+    logger.info(`Marca creada: ${nombre}`);
+    
+    res.status(201).json({
+      success: true,
+      message: 'Marca creada exitosamente',
+      data: { id: (result as any).insertId }
+    });
+    
+  } catch (error) {
+    logger.error('Error creando marca:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/generales/estados:
+ *   get:
+ *     summary: Obtener todos los estados del sistema
+ *     tags: [Generales]
+ *     responses:
+ *       200:
+ *         description: Lista de estados
+ */
+router.get('/estados', async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        id,
+        nombre,
+        descripcion,
+        color,
+        categoria,
+        activo,
+        orden
+      FROM estados
+      ORDER BY categoria ASC, orden ASC, nombre ASC
+    `;
+    
+    const [estados] = await pool.execute(query);
+    
+    logger.info(`Estados obtenidos: ${(estados as any[]).length}`);
+    
+    res.json({
+      success: true,
+      data: estados
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo estados:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/generales/prioridades:
+ *   get:
+ *     summary: Obtener todas las prioridades del sistema
+ *     tags: [Generales]
+ *     responses:
+ *       200:
+ *         description: Lista de prioridades
+ */
+router.get('/prioridades', async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        id,
+        nombre,
+        descripcion,
+        color,
+        nivel,
+        activo
+      FROM prioridades
+      ORDER BY nivel DESC
+    `;
+    
+    const [prioridades] = await pool.execute(query);
+    
+    logger.info(`Prioridades obtenidas: ${(prioridades as any[]).length}`);
+    
+    res.json({
+      success: true,
+      data: prioridades
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo prioridades:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/generales/estadisticas:
+ *   get:
+ *     summary: Obtener estadísticas generales del sistema
+ *     tags: [Generales]
+ *     responses:
+ *       200:
+ *         description: Estadísticas generales
+ */
+router.get('/estadisticas', async (req, res) => {
+  try {
+    // Estadísticas de usuarios
+    const [usuariosStats] = await pool.execute(`
+      SELECT 
+        COUNT(*) as total_usuarios,
+        COUNT(CASE WHEN estado = 'activo' THEN 1 END) as usuarios_activos,
+        COUNT(CASE WHEN rol = 'tecnico' THEN 1 END) as tecnicos,
+        COUNT(CASE WHEN rol = 'admin' THEN 1 END) as administradores,
+        COUNT(CASE WHEN ultimo_acceso >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as usuarios_activos_semana
+      FROM usuarios
+    `);
+    
+    // Estadísticas de configuración
+    const [configStats] = await pool.execute(`
+      SELECT 
+        (SELECT COUNT(*) FROM tipos_equipos WHERE activo = 1) as tipos_equipos,
+        (SELECT COUNT(*) FROM marcas WHERE activo = 1) as marcas,
+        (SELECT COUNT(*) FROM estados WHERE activo = 1) as estados,
+        (SELECT COUNT(*) FROM prioridades WHERE activo = 1) as prioridades
+    `);
+    
+    // Estadísticas de sistema
+    const [sistemaStats] = await pool.execute(`
+      SELECT 
+        COUNT(*) as total_equipos,
+        COUNT(DISTINCT cliente_id) as total_clientes,
+        COUNT(DISTINCT sede_id) as total_sedes
+      FROM equipos
+    `);
+    
+    res.json({
+      success: true,
+      data: {
+        usuarios: (usuariosStats as any[])[0],
+        configuracion: (configStats as any[])[0],
+        sistema: (sistemaStats as any[])[0]
+      }
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo estadísticas generales:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+export default router;

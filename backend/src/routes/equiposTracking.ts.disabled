@@ -1,0 +1,271 @@
+import { Router } from 'express';
+import { body, param, query } from 'express-validator';
+import EquipoTrackingController from '../controllers/EquipoTrackingController';
+import { authenticateToken } from '../middleware/auth';
+import { uploadMiddleware } from '../middleware/upload';
+
+const router = Router();
+
+// Aplicar autenticación a todas las rutas
+router.use(authenticateToken);
+
+// Obtener equipos con tracking
+router.get('/equipos', [
+  query('tipo').optional().isString(),
+  query('estado').optional().isIn(['operativo', 'mantenimiento', 'fuera_servicio', 'calibracion']),
+  query('ubicacion').optional().isString(),
+  query('incluirHistorial').optional().isBoolean(),
+  query('incluirMantenimientos').optional().isBoolean(),
+  query('incluirFotos').optional().isBoolean(),
+  query('incluirAlertas').optional().isBoolean()
+], EquipoTrackingController.getEquiposWithTracking);
+
+// Actualizar ubicación de equipo
+router.post('/equipos/:equipoId/ubicacion', [
+  param('equipoId').isInt({ min: 1 }),
+  body('latitud').isFloat({ min: -90, max: 90 }),
+  body('longitud').isFloat({ min: -180, max: 180 }),
+  body('direccion').optional().isString().isLength({ max: 255 }),
+  body('precision').optional().isFloat({ min: 0 }),
+  body('usuarioId').isInt({ min: 1 }),
+  body('observaciones').optional().isString().isLength({ max: 1000 })
+], EquipoTrackingController.updateEquipoLocation);
+
+// Crear mantenimiento
+router.post('/equipos/:equipoId/mantenimientos', [
+  param('equipoId').isInt({ min: 1 }),
+  body('tipo').isIn(['preventivo', 'correctivo', 'calibracion', 'instalacion']),
+  body('descripcion').isString().isLength({ min: 1, max: 1000 }),
+  body('tecnicoId').isInt({ min: 1 }),
+  body('fechaProgramada').isISO8601().toDate(),
+  body('prioridad').optional().isIn(['baja', 'media', 'alta', 'critica']),
+  body('estimacionDuracion').optional().isFloat({ min: 0 }),
+  body('checkpoints').optional().isArray(),
+  body('observaciones').optional().isString().isLength({ max: 2000 })
+], EquipoTrackingController.createMantenimiento);
+
+// Iniciar mantenimiento
+router.post('/mantenimientos/:mantenimientoId/iniciar', [
+  param('mantenimientoId').isInt({ min: 1 }),
+  body('usuarioId').isInt({ min: 1 }),
+  body('latitud').optional().isFloat({ min: -90, max: 90 }),
+  body('longitud').optional().isFloat({ min: -180, max: 180 }),
+  body('observacionesInicio').optional().isString().isLength({ max: 1000 })
+], EquipoTrackingController.iniciarMantenimiento);
+
+// Completar checkpoint
+router.post('/mantenimientos/:mantenimientoId/checkpoints/:checkpointId/completar', [
+  param('mantenimientoId').isInt({ min: 1 }),
+  param('checkpointId').isString(),
+  body('observaciones').optional().isString().isLength({ max: 1000 }),
+  body('mediciones').optional().isObject(),
+  body('fotos').optional().isArray(),
+  body('usuarioId').isInt({ min: 1 }),
+  body('latitud').optional().isFloat({ min: -90, max: 90 }),
+  body('longitud').optional().isFloat({ min: -180, max: 180 })
+], EquipoTrackingController.completarCheckpoint);
+
+// Finalizar mantenimiento
+router.post('/mantenimientos/:mantenimientoId/finalizar', [
+  param('mantenimientoId').isInt({ min: 1 }),
+  body('observacionesFinales').optional().isString().isLength({ max: 2000 }),
+  body('condicionesPost').optional().isObject(),
+  body('certificacionCalidad').isBoolean(),
+  body('usuarioId').isInt({ min: 1 }),
+  body('latitud').optional().isFloat({ min: -90, max: 90 }),
+  body('longitud').optional().isFloat({ min: -180, max: 180 })
+], EquipoTrackingController.finalizarMantenimiento);
+
+// Subir foto de equipo
+router.post('/equipos/:equipoId/fotos', 
+  uploadMiddleware.single('foto'),
+  [
+    param('equipoId').isInt({ min: 1 }),
+    body('nombre').optional().isString().isLength({ max: 255 }),
+    body('tipo').optional().isIn(['instalacion', 'estado', 'dano', 'reparacion', 'calibracion', 'limpieza', 'certificado']),
+    body('observaciones').optional().isString().isLength({ max: 1000 }),
+    body('tags').optional().isString(),
+    body('esPublica').optional().isBoolean(),
+    body('mantenimientoId').optional().isInt({ min: 1 }),
+    body('usuarioId').isInt({ min: 1 }),
+    body('latitud').optional().isFloat({ min: -90, max: 90 }),
+    body('longitud').optional().isFloat({ min: -180, max: 180 })
+  ], 
+  EquipoTrackingController.uploadFotoEquipo
+);
+
+// Obtener métricas de dashboard
+router.get('/dashboard/metricas', [
+  query('fechaInicio').optional().isISO8601().toDate(),
+  query('fechaFin').optional().isISO8601().toDate(),
+  query('tipo').optional().isString(),
+  query('ubicacion').optional().isString(),
+  query('incluirTendencias').optional().isBoolean()
+], EquipoTrackingController.getDashboardMetrics);
+
+// Obtener historial de ubicaciones de un equipo
+router.get('/equipos/:equipoId/historial-ubicaciones', [
+  param('equipoId').isInt({ min: 1 }),
+  query('fechaInicio').optional().isISO8601().toDate(),
+  query('fechaFin').optional().isISO8601().toDate(),
+  query('limite').optional().isInt({ min: 1, max: 1000 })
+], async (req, res) => {
+  try {
+    const { equipoId } = req.params;
+    const { fechaInicio, fechaFin, limite = 50 } = req.query;
+    
+    // Implementar lógica para obtener historial
+    // Por ahora retornamos datos mock
+    const historial = [
+      {
+        id: 1,
+        latitud: -34.6037,
+        longitud: -58.3816,
+        direccion: 'Hospital Central - UCI',
+        fechaRegistro: new Date().toISOString(),
+        precision: 10,
+        dentroZonaAutorizada: true
+      }
+    ];
+    
+    res.json({
+      success: true,
+      data: historial,
+      total: historial.length
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+// Obtener alertas activas de equipos
+router.get('/equipos/alertas', [
+  query('severidad').optional().isIn(['baja', 'media', 'alta', 'critica']),
+  query('tipo').optional().isString(),
+  query('equipoId').optional().isInt({ min: 1 }),
+  query('limite').optional().isInt({ min: 1, max: 100 })
+], async (req, res) => {
+  try {
+    const alertas = [
+      {
+        id: 1,
+        equipoId: 1,
+        equipoNombre: 'Ventilador Draeger V500',
+        tipo: 'ubicacion',
+        severidad: 'alta',
+        titulo: 'Equipo fuera de zona autorizada',
+        descripcion: 'El equipo se encuentra fuera de su zona autorizada',
+        fechaCreacion: new Date().toISOString(),
+        fechaResolucion: null,
+        activa: true
+      }
+    ];
+    
+    res.json({
+      success: true,
+      data: alertas,
+      total: alertas.length
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+// Obtener mantenimientos por estado
+router.get('/mantenimientos', [
+  query('estado').optional().isIn(['programado', 'en_progreso', 'completado', 'cancelado']),
+  query('tipo').optional().isIn(['preventivo', 'correctivo', 'calibracion', 'instalacion']),
+  query('equipoId').optional().isInt({ min: 1 }),
+  query('tecnicoId').optional().isInt({ min: 1 }),
+  query('fechaInicio').optional().isISO8601().toDate(),
+  query('fechaFin').optional().isISO8601().toDate(),
+  query('limite').optional().isInt({ min: 1, max: 100 })
+], async (req, res) => {
+  try {
+    const mantenimientos = [
+      {
+        id: 1,
+        equipoId: 1,
+        equipoNombre: 'Ventilador Draeger V500',
+        tipo: 'preventivo',
+        estado: 'programado',
+        descripcion: 'Mantenimiento preventivo mensual',
+        tecnicoId: 1,
+        tecnicoNombre: 'Ing. García',
+        fechaProgramada: new Date().toISOString(),
+        fechaInicio: null,
+        fechaFinalizacion: null,
+        prioridad: 'media',
+        estimacionDuracion: 2.5,
+        duracionReal: null,
+        qrCode: 'eyJtYW50ZW5pbWllbnRvSWQiOjEsImVxdWlwb0lkIjoxfQ=='
+      }
+    ];
+    
+    res.json({
+      success: true,
+      data: mantenimientos,
+      total: mantenimientos.length
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+// Obtener fotos de equipos
+router.get('/equipos/:equipoId/fotos', [
+  param('equipoId').isInt({ min: 1 }),
+  query('tipo').optional().isIn(['instalacion', 'estado', 'dano', 'reparacion', 'calibracion', 'limpieza', 'certificado']),
+  query('mantenimientoId').optional().isInt({ min: 1 }),
+  query('fechaInicio').optional().isISO8601().toDate(),
+  query('fechaFin').optional().isISO8601().toDate(),
+  query('limite').optional().isInt({ min: 1, max: 100 })
+], async (req, res) => {
+  try {
+    const { equipoId } = req.params;
+    
+    const fotos = [
+      {
+        id: 1,
+        equipoId: parseInt(equipoId as string),
+        nombre: 'Estado general',
+        tipo: 'estado',
+        url: '/uploads/equipos/foto1.jpg',
+        thumbnail: '/uploads/equipos/thumbs/foto1.jpg',
+        fechaCaptura: new Date().toISOString(),
+        usuarioId: 1,
+        usuarioNombre: 'Téc. Rodriguez',
+        observaciones: 'Estado general bueno',
+        tags: ['estado', 'revision'],
+        esPublica: true,
+        metadata: {
+          tamano: 1024000,
+          formato: 'image/jpeg',
+          nombreOriginal: 'equipo_estado.jpg'
+        }
+      }
+    ];
+    
+    res.json({
+      success: true,
+      data: fotos,
+      total: fotos.length
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+export default router;

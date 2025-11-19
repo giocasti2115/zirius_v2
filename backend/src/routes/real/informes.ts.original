@@ -1,0 +1,1134 @@
+import { Router } from 'express';
+import { pool } from '../../config/database';
+import { logger } from '../../utils/logger';
+
+const router = Router();
+
+/**
+ * @swagger
+ * /api/real/informes/correctivos-equipo:
+ *   get:
+ *     summary: Obtener resumen de correctivos por equipo
+ *     tags: [Informes]
+ *     parameters:
+ *       - in: query
+ *         name: cliente_id
+ *         schema:
+ *           type: integer
+ *         description: ID del cliente para filtrar
+ *       - in: query
+ *         name: fecha_inicio
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Fecha de inicio para el reporte
+ *       - in: query
+ *         name: fecha_fin
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Fecha de fin para el reporte
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 50
+ *         description: Límite de resultados
+ *     responses:
+ *       200:
+ *         description: Resumen de correctivos por equipo obtenido exitosamente
+ */
+router.get('/correctivos-equipo', async (req, res) => {
+  try {
+    const { cliente_id, fecha_inicio, fecha_fin, limit = 50 } = req.query;
+    
+    let query = `
+      SELECT 
+        e.id,
+        e.codigo_equipo,
+        e.nombre_equipo,
+        e.marca,
+        e.modelo,
+        e.serie,
+        c.nombre as cliente_nombre,
+        s.nombre as sede_nombre,
+        COUNT(sol.id) as total_correctivos,
+        COUNT(CASE WHEN sol.estado = 'completada' THEN 1 END) as correctivos_completados,
+        COUNT(CASE WHEN sol.estado = 'pendiente' THEN 1 END) as correctivos_pendientes,
+        COUNT(CASE WHEN sol.estado = 'en_proceso' THEN 1 END) as correctivos_en_proceso,
+        AVG(CASE 
+          WHEN sol.fecha_cierre IS NOT NULL 
+          THEN DATEDIFF(sol.fecha_cierre, sol.fecha_creacion) 
+        END) as tiempo_promedio_resolucion,
+        SUM(COALESCE(o.costo_total, 0)) as costo_total_correctivos,
+        MAX(sol.fecha_creacion) as ultimo_correctivo,
+        COUNT(CASE WHEN sol.tipo_servicio = 'correctivo' THEN 1 END) as correctivos_reactivos,
+        COUNT(CASE WHEN sol.tipo_servicio = 'preventivo' THEN 1 END) as correctivos_preventivos
+      FROM equipos e
+      LEFT JOIN clientes c ON e.cliente_id = c.id
+      LEFT JOIN sedes s ON e.sede_id = s.id
+      LEFT JOIN solicitudes sol ON e.id = sol.equipo_id 
+        AND sol.tipo_servicio IN ('correctivo', 'preventivo')
+      LEFT JOIN ordenes o ON sol.id = o.solicitud_id
+      WHERE 1=1
+    `;
+    
+    const params: any[] = [];
+    
+    if (cliente_id) {
+      query += ` AND e.cliente_id = ?`;
+      params.push(cliente_id);
+    }
+    
+    if (fecha_inicio) {
+      query += ` AND sol.fecha_creacion >= ?`;
+      params.push(fecha_inicio);
+    }
+    
+    if (fecha_fin) {
+      query += ` AND sol.fecha_creacion <= ?`;
+      params.push(fecha_fin);
+    }
+    
+    query += `
+      GROUP BY e.id, e.codigo_equipo, e.nombre_equipo, e.marca, e.modelo, e.serie, 
+               c.nombre, s.nombre
+      HAVING total_correctivos > 0
+      ORDER BY total_correctivos DESC, ultimo_correctivo DESC
+      LIMIT ?
+    `;
+    params.push(parseInt(limit as string));
+    
+    const [rows] = await pool.execute(query, params);
+    
+    // Obtener estadísticas generales
+    const statsQuery = `
+      SELECT 
+        COUNT(DISTINCT e.id) as total_equipos,
+        COUNT(sol.id) as total_correctivos,
+        AVG(CASE 
+          WHEN sol.fecha_cierre IS NOT NULL 
+          THEN DATEDIFF(sol.fecha_cierre, sol.fecha_creacion) 
+        END) as tiempo_promedio_general,
+        SUM(COALESCE(o.costo_total, 0)) as costo_total_general,
+        COUNT(CASE WHEN sol.estado = 'completada' THEN 1 END) as completados_general,
+        (COUNT(CASE WHEN sol.estado = 'completada' THEN 1 END) / COUNT(sol.id) * 100) as tasa_completitud
+      FROM equipos e
+      LEFT JOIN solicitudes sol ON e.id = sol.equipo_id 
+        AND sol.tipo_servicio IN ('correctivo', 'preventivo')
+      LEFT JOIN ordenes o ON sol.id = o.solicitud_id
+      WHERE sol.id IS NOT NULL
+    `;
+    
+    const [statsRows] = await pool.execute(statsQuery, params.slice(0, params.length - 1));
+    
+    logger.info(`Reporte correctivos por equipo obtenido: ${(rows as any[]).length} registros`);
+    
+    res.json({
+      success: true,
+      data: {
+        equipos: rows,
+        estadisticas: (statsRows as any[])[0],
+        filtros: {
+          cliente_id,
+          fecha_inicio,
+          fecha_fin,
+          limit
+        }
+      }
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo reporte correctivos por equipo:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/informes/repuestos-instalados:
+ *   get:
+ *     summary: Obtener historial de repuestos instalados
+ *     tags: [Informes]
+ */
+router.get('/repuestos-instalados', async (req, res) => {
+  try {
+    const { equipo_id, fecha_inicio, fecha_fin, repuesto_id, limit = 100 } = req.query;
+    
+    let query = `
+      SELECT 
+        ri.id,
+        ri.fecha_instalacion,
+        ri.cantidad,
+        ri.costo_unitario,
+        ri.costo_total,
+        ri.observaciones,
+        r.codigo as repuesto_codigo,
+        r.nombre as repuesto_nombre,
+        r.marca as repuesto_marca,
+        r.modelo as repuesto_modelo,
+        e.codigo_equipo,
+        e.nombre_equipo,
+        c.nombre as cliente_nombre,
+        s.nombre as sede_nombre,
+        sol.codigo_solicitud,
+        o.numero_orden,
+        t.nombre as tecnico_nombre,
+        ri.tiempo_instalacion,
+        ri.garantia_meses,
+        ri.estado_anterior,
+        ri.estado_posterior
+      FROM repuestos_instalados ri
+      JOIN repuestos r ON ri.repuesto_id = r.id
+      JOIN equipos e ON ri.equipo_id = e.id
+      JOIN clientes c ON e.cliente_id = c.id
+      JOIN sedes s ON e.sede_id = s.id
+      LEFT JOIN ordenes o ON ri.orden_id = o.id
+      LEFT JOIN solicitudes sol ON o.solicitud_id = sol.id
+      LEFT JOIN usuarios t ON ri.tecnico_id = t.id
+      WHERE 1=1
+    `;
+    
+    const params: any[] = [];
+    
+    if (equipo_id) {
+      query += ` AND ri.equipo_id = ?`;
+      params.push(equipo_id);
+    }
+    
+    if (repuesto_id) {
+      query += ` AND ri.repuesto_id = ?`;
+      params.push(repuesto_id);
+    }
+    
+    if (fecha_inicio) {
+      query += ` AND ri.fecha_instalacion >= ?`;
+      params.push(fecha_inicio);
+    }
+    
+    if (fecha_fin) {
+      query += ` AND ri.fecha_instalacion <= ?`;
+      params.push(fecha_fin);
+    }
+    
+    query += `
+      ORDER BY ri.fecha_instalacion DESC
+      LIMIT ?
+    `;
+    params.push(parseInt(limit as string));
+    
+    const [rows] = await pool.execute(query, params);
+    
+    // Estadísticas de repuestos
+    const statsQuery = `
+      SELECT 
+        COUNT(ri.id) as total_instalaciones,
+        COUNT(DISTINCT ri.repuesto_id) as repuestos_diferentes,
+        COUNT(DISTINCT ri.equipo_id) as equipos_intervenidos,
+        SUM(ri.costo_total) as costo_total_repuestos,
+        AVG(ri.costo_total) as costo_promedio,
+        AVG(ri.tiempo_instalacion) as tiempo_promedio_instalacion,
+        COUNT(CASE WHEN ri.garantia_meses > 0 THEN 1 END) as con_garantia,
+        MAX(ri.fecha_instalacion) as ultima_instalacion
+      FROM repuestos_instalados ri
+      WHERE 1=1
+    `;
+    
+    const statsParams = params.slice(0, -1); // Todos los parámetros excepto el LIMIT
+    const [statsRows] = await pool.execute(statsQuery, statsParams);
+    
+    // Top repuestos más instalados
+    const topRepuestosQuery = `
+      SELECT 
+        r.codigo,
+        r.nombre,
+        r.marca,
+        COUNT(ri.id) as veces_instalado,
+        SUM(ri.costo_total) as costo_total,
+        AVG(ri.costo_unitario) as costo_promedio
+      FROM repuestos_instalados ri
+      JOIN repuestos r ON ri.repuesto_id = r.id
+      WHERE 1=1
+      ${statsParams.map(() => 'AND 1=1').join(' ')}
+      GROUP BY r.id, r.codigo, r.nombre, r.marca
+      ORDER BY veces_instalado DESC
+      LIMIT 10
+    `;
+    
+    const [topRepuestos] = await pool.execute(topRepuestosQuery, statsParams);
+    
+    logger.info(`Reporte repuestos instalados obtenido: ${(rows as any[]).length} registros`);
+    
+    res.json({
+      success: true,
+      data: {
+        instalaciones: rows,
+        estadisticas: (statsRows as any[])[0],
+        top_repuestos: topRepuestos,
+        filtros: {
+          equipo_id,
+          fecha_inicio,
+          fecha_fin,
+          repuesto_id,
+          limit
+        }
+      }
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo reporte repuestos instalados:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger  
+ * /api/real/informes/repuestos:
+ *   get:
+ *     summary: Reporte general de repuestos
+ *     tags: [Informes]
+ */
+router.get('/repuestos', async (req, res) => {
+  try {
+    const { categoria, marca, estado, limit = 100 } = req.query;
+    
+    let query = `
+      SELECT 
+        r.id,
+        r.codigo,
+        r.nombre,
+        r.descripcion,
+        r.marca,
+        r.modelo,
+        r.categoria,
+        r.stock_actual,
+        r.stock_minimo,
+        r.stock_maximo,
+        r.precio_unitario,
+        r.precio_promedio,
+        r.estado,
+        r.ubicacion,
+        r.proveedor_principal,
+        COUNT(ri.id) as veces_usado,
+        SUM(ri.cantidad) as cantidad_total_usada,
+        MAX(ri.fecha_instalacion) as ultima_instalacion,
+        AVG(ri.costo_unitario) as costo_promedio_instalacion,
+        CASE 
+          WHEN r.stock_actual <= r.stock_minimo THEN 'CRÍTICO'
+          WHEN r.stock_actual <= (r.stock_minimo * 1.5) THEN 'BAJO'
+          WHEN r.stock_actual >= r.stock_maximo THEN 'EXCESO'
+          ELSE 'NORMAL'
+        END as estado_stock,
+        (r.stock_actual * r.precio_unitario) as valor_inventario
+      FROM repuestos r
+      LEFT JOIN repuestos_instalados ri ON r.id = ri.repuesto_id
+      WHERE 1=1
+    `;
+    
+    const params: any[] = [];
+    
+    if (categoria) {
+      query += ` AND r.categoria = ?`;
+      params.push(categoria);
+    }
+    
+    if (marca) {
+      query += ` AND r.marca LIKE ?`;
+      params.push(`%${marca}%`);
+    }
+    
+    if (estado) {
+      query += ` AND r.estado = ?`;
+      params.push(estado);
+    }
+    
+    query += `
+      GROUP BY r.id
+      ORDER BY r.nombre ASC
+      LIMIT ?
+    `;
+    params.push(parseInt(limit as string));
+    
+    const [rows] = await pool.execute(query, params);
+    
+    // Estadísticas generales de inventario
+    const statsQuery = `
+      SELECT 
+        COUNT(r.id) as total_repuestos,
+        COUNT(DISTINCT r.marca) as marcas_diferentes,
+        COUNT(DISTINCT r.categoria) as categorias_diferentes,
+        SUM(r.stock_actual) as stock_total,
+        SUM(r.stock_actual * r.precio_unitario) as valor_total_inventario,
+        AVG(r.precio_unitario) as precio_promedio,
+        COUNT(CASE WHEN r.stock_actual <= r.stock_minimo THEN 1 END) as stock_critico,
+        COUNT(CASE WHEN r.stock_actual <= (r.stock_minimo * 1.5) THEN 1 END) as stock_bajo,
+        COUNT(CASE WHEN r.estado = 'activo' THEN 1 END) as repuestos_activos,
+        COUNT(CASE WHEN r.estado = 'descontinuado' THEN 1 END) as repuestos_descontinuados
+      FROM repuestos r
+      WHERE 1=1
+    `;
+    
+    const statsParams = params.slice(0, -1);
+    const [statsRows] = await pool.execute(statsQuery, statsParams);
+    
+    // Repuestos más críticos
+    const criticosQuery = `
+      SELECT 
+        r.codigo,
+        r.nombre,
+        r.stock_actual,
+        r.stock_minimo,
+        r.precio_unitario,
+        (r.stock_minimo - r.stock_actual) as deficit,
+        ((r.stock_minimo - r.stock_actual) * r.precio_unitario) as costo_reposicion
+      FROM repuestos r
+      WHERE r.stock_actual < r.stock_minimo
+        AND r.estado = 'activo'
+      ORDER BY deficit DESC
+      LIMIT 20
+    `;
+    
+    const [criticos] = await pool.execute(criticosQuery);
+    
+    logger.info(`Reporte general de repuestos obtenido: ${(rows as any[]).length} registros`);
+    
+    res.json({
+      success: true,
+      data: {
+        repuestos: rows,
+        estadisticas: (statsRows as any[])[0],
+        stock_critico: criticos,
+        filtros: {
+          categoria,
+          marca,
+          estado,
+          limit
+        }
+      }
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo reporte de repuestos:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/informes/fallos:
+ *   get:
+ *     summary: Análisis de fallos y averías
+ *     tags: [Informes]
+ */
+router.get('/fallos', async (req, res) => {
+  try {
+    const { fecha_inicio, fecha_fin, equipo_id, tipo_fallo, limit = 100 } = req.query;
+    
+    let query = `
+      SELECT 
+        f.id,
+        f.fecha_fallo,
+        f.descripcion,
+        f.tipo_fallo,
+        f.causa_raiz,
+        f.solucion_aplicada,
+        f.tiempo_resolucion,
+        f.costo_reparacion,
+        f.recurrente,
+        f.criticidad,
+        e.codigo_equipo,
+        e.nombre_equipo,
+        e.marca,
+        e.modelo,
+        c.nombre as cliente_nombre,
+        s.nombre as sede_nombre,
+        sol.codigo_solicitud,
+        t.nombre as tecnico_nombre,
+        f.estado_equipo_antes,
+        f.estado_equipo_despues,
+        f.repuestos_utilizados,
+        f.observaciones
+      FROM fallos f
+      JOIN equipos e ON f.equipo_id = e.id
+      JOIN clientes c ON e.cliente_id = c.id
+      JOIN sedes s ON e.sede_id = s.id
+      LEFT JOIN solicitudes sol ON f.solicitud_id = sol.id
+      LEFT JOIN usuarios t ON f.tecnico_id = t.id
+      WHERE 1=1
+    `;
+    
+    const params: any[] = [];
+    
+    if (fecha_inicio) {
+      query += ` AND f.fecha_fallo >= ?`;
+      params.push(fecha_inicio);
+    }
+    
+    if (fecha_fin) {
+      query += ` AND f.fecha_fallo <= ?`;
+      params.push(fecha_fin);
+    }
+    
+    if (equipo_id) {
+      query += ` AND f.equipo_id = ?`;
+      params.push(equipo_id);
+    }
+    
+    if (tipo_fallo) {
+      query += ` AND f.tipo_fallo = ?`;
+      params.push(tipo_fallo);
+    }
+    
+    query += `
+      ORDER BY f.fecha_fallo DESC
+      LIMIT ?
+    `;
+    params.push(parseInt(limit as string));
+    
+    const [rows] = await pool.execute(query, params);
+    
+    // Estadísticas de fallos
+    const statsQuery = `
+      SELECT 
+        COUNT(f.id) as total_fallos,
+        COUNT(DISTINCT f.equipo_id) as equipos_afectados,
+        AVG(f.tiempo_resolucion) as tiempo_promedio_resolucion,
+        SUM(f.costo_reparacion) as costo_total_reparaciones,
+        AVG(f.costo_reparacion) as costo_promedio_reparacion,
+        COUNT(CASE WHEN f.recurrente = 1 THEN 1 END) as fallos_recurrentes,
+        COUNT(CASE WHEN f.criticidad = 'alta' THEN 1 END) as fallos_criticos,
+        COUNT(CASE WHEN f.criticidad = 'media' THEN 1 END) as fallos_medios,
+        COUNT(CASE WHEN f.criticidad = 'baja' THEN 1 END) as fallos_bajos
+      FROM fallos f
+      WHERE 1=1
+    `;
+    
+    const statsParams = params.slice(0, -1);
+    const [statsRows] = await pool.execute(statsQuery, statsParams);
+    
+    // Top tipos de fallos
+    const tiposFallosQuery = `
+      SELECT 
+        f.tipo_fallo,
+        COUNT(f.id) as cantidad,
+        AVG(f.tiempo_resolucion) as tiempo_promedio,
+        SUM(f.costo_reparacion) as costo_total,
+        COUNT(CASE WHEN f.recurrente = 1 THEN 1 END) as recurrentes
+      FROM fallos f
+      WHERE 1=1
+      ${statsParams.map(() => 'AND 1=1').join(' ')}
+      GROUP BY f.tipo_fallo
+      ORDER BY cantidad DESC
+      LIMIT 10
+    `;
+    
+    const [tiposFallos] = await pool.execute(tiposFallosQuery, statsParams);
+    
+    // Equipos más problemáticos
+    const equiposProblematicosQuery = `
+      SELECT 
+        e.codigo_equipo,
+        e.nombre_equipo,
+        e.marca,
+        e.modelo,
+        COUNT(f.id) as total_fallos,
+        AVG(f.tiempo_resolucion) as tiempo_promedio,
+        SUM(f.costo_reparacion) as costo_total,
+        MAX(f.fecha_fallo) as ultimo_fallo,
+        COUNT(CASE WHEN f.recurrente = 1 THEN 1 END) as fallos_recurrentes
+      FROM fallos f
+      JOIN equipos e ON f.equipo_id = e.id
+      WHERE 1=1
+      ${statsParams.map(() => 'AND 1=1').join(' ')}
+      GROUP BY e.id
+      ORDER BY total_fallos DESC
+      LIMIT 15
+    `;
+    
+    const [equiposProblematicos] = await pool.execute(equiposProblematicosQuery, statsParams);
+    
+    logger.info(`Reporte de fallos obtenido: ${(rows as any[]).length} registros`);
+    
+    res.json({
+      success: true,
+      data: {
+        fallos: rows,
+        estadisticas: (statsRows as any[])[0],
+        tipos_fallos: tiposFallos,
+        equipos_problematicos: equiposProblematicos,
+        filtros: {
+          fecha_inicio,
+          fecha_fin,
+          equipo_id,
+          tipo_fallo,
+          limit
+        }
+      }
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo reporte de fallos:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/informes/duracion-repuestos:
+ *   get:
+ *     summary: Análisis de duración y vida útil de repuestos
+ *     tags: [Informes]
+ */
+router.get('/duracion-repuestos', async (req, res) => {
+  try {
+    const { repuesto_id, equipo_id, limite_duracion, limit = 100 } = req.query;
+    
+    let query = `
+      SELECT 
+        r.codigo as repuesto_codigo,
+        r.nombre as repuesto_nombre,
+        r.marca as repuesto_marca,
+        e.codigo_equipo,
+        e.nombre_equipo,
+        ri1.fecha_instalacion as fecha_instalacion,
+        ri2.fecha_instalacion as fecha_reemplazo,
+        DATEDIFF(ri2.fecha_instalacion, ri1.fecha_instalacion) as duracion_dias,
+        ROUND(DATEDIFF(ri2.fecha_instalacion, ri1.fecha_instalacion) / 30.44, 1) as duracion_meses,
+        ri1.costo_unitario as costo_instalacion,
+        ri1.garantia_meses,
+        c.nombre as cliente_nombre,
+        s.nombre as sede_nombre,
+        CASE 
+          WHEN DATEDIFF(ri2.fecha_instalacion, ri1.fecha_instalacion) < (ri1.garantia_meses * 30) 
+          THEN 'GARANTÍA' 
+          ELSE 'NORMAL' 
+        END as tipo_reemplazo,
+        (ri1.costo_unitario / GREATEST(DATEDIFF(ri2.fecha_instalacion, ri1.fecha_instalacion), 1)) as costo_por_dia
+      FROM repuestos_instalados ri1
+      JOIN repuestos r ON ri1.repuesto_id = r.id
+      JOIN equipos e ON ri1.equipo_id = e.id
+      JOIN clientes c ON e.cliente_id = c.id
+      JOIN sedes s ON e.sede_id = s.id
+      JOIN repuestos_instalados ri2 ON ri1.equipo_id = ri2.equipo_id 
+        AND ri1.repuesto_id = ri2.repuesto_id 
+        AND ri2.fecha_instalacion > ri1.fecha_instalacion
+      WHERE ri2.fecha_instalacion = (
+        SELECT MIN(ri3.fecha_instalacion)
+        FROM repuestos_instalados ri3
+        WHERE ri3.equipo_id = ri1.equipo_id
+          AND ri3.repuesto_id = ri1.repuesto_id
+          AND ri3.fecha_instalacion > ri1.fecha_instalacion
+      )
+    `;
+    
+    const params: any[] = [];
+    
+    if (repuesto_id) {
+      query += ` AND ri1.repuesto_id = ?`;
+      params.push(repuesto_id);
+    }
+    
+    if (equipo_id) {
+      query += ` AND ri1.equipo_id = ?`;
+      params.push(equipo_id);
+    }
+    
+    if (limite_duracion) {
+      query += ` AND DATEDIFF(ri2.fecha_instalacion, ri1.fecha_instalacion) <= ?`;
+      params.push(limite_duracion);
+    }
+    
+    query += `
+      ORDER BY duracion_dias ASC
+      LIMIT ?
+    `;
+    params.push(parseInt(limit as string));
+    
+    const [rows] = await pool.execute(query, params);
+    
+    // Estadísticas de duración
+    const statsQuery = `
+      SELECT 
+        COUNT(*) as total_reemplazos,
+        AVG(DATEDIFF(ri2.fecha_instalacion, ri1.fecha_instalacion)) as duracion_promedio_dias,
+        MIN(DATEDIFF(ri2.fecha_instalacion, ri1.fecha_instalacion)) as duracion_minima_dias,
+        MAX(DATEDIFF(ri2.fecha_instalacion, ri1.fecha_instalacion)) as duracion_maxima_dias,
+        COUNT(CASE 
+          WHEN DATEDIFF(ri2.fecha_instalacion, ri1.fecha_instalacion) < (ri1.garantia_meses * 30) 
+          THEN 1 
+        END) as reemplazos_en_garantia,
+        AVG(ri1.costo_unitario) as costo_promedio,
+        AVG(ri1.costo_unitario / GREATEST(DATEDIFF(ri2.fecha_instalacion, ri1.fecha_instalacion), 1)) as costo_promedio_por_dia
+      FROM repuestos_instalados ri1
+      JOIN repuestos_instalados ri2 ON ri1.equipo_id = ri2.equipo_id 
+        AND ri1.repuesto_id = ri2.repuesto_id 
+        AND ri2.fecha_instalacion > ri1.fecha_instalacion
+      WHERE ri2.fecha_instalacion = (
+        SELECT MIN(ri3.fecha_instalacion)
+        FROM repuestos_instalados ri3
+        WHERE ri3.equipo_id = ri1.equipo_id
+          AND ri3.repuesto_id = ri1.repuesto_id
+          AND ri3.fecha_instalacion > ri1.fecha_instalacion
+      )
+    `;
+    
+    const statsParams = params.slice(0, -1);
+    const [statsRows] = await pool.execute(statsQuery, statsParams);
+    
+    // Repuestos con menor duración promedio
+    const menorDuracionQuery = `
+      SELECT 
+        r.codigo,
+        r.nombre,
+        r.marca,
+        COUNT(*) as veces_reemplazado,
+        AVG(DATEDIFF(ri2.fecha_instalacion, ri1.fecha_instalacion)) as duracion_promedio,
+        MIN(DATEDIFF(ri2.fecha_instalacion, ri1.fecha_instalacion)) as duracion_minima,
+        AVG(ri1.costo_unitario) as costo_promedio
+      FROM repuestos_instalados ri1
+      JOIN repuestos r ON ri1.repuesto_id = r.id
+      JOIN repuestos_instalados ri2 ON ri1.equipo_id = ri2.equipo_id 
+        AND ri1.repuesto_id = ri2.repuesto_id 
+        AND ri2.fecha_instalacion > ri1.fecha_instalacion
+      WHERE ri2.fecha_instalacion = (
+        SELECT MIN(ri3.fecha_instalacion)
+        FROM repuestos_instalados ri3
+        WHERE ri3.equipo_id = ri1.equipo_id
+          AND ri3.repuesto_id = ri1.repuesto_id
+          AND ri3.fecha_instalacion > ri1.fecha_instalacion
+      )
+      GROUP BY r.id, r.codigo, r.nombre, r.marca
+      HAVING veces_reemplazado >= 2
+      ORDER BY duracion_promedio ASC
+      LIMIT 15
+    `;
+    
+    const [menorDuracion] = await pool.execute(menorDuracionQuery, statsParams);
+    
+    logger.info(`Reporte duración repuestos obtenido: ${(rows as any[]).length} registros`);
+    
+    res.json({
+      success: true,
+      data: {
+        duraciones: rows,
+        estadisticas: (statsRows as any[])[0],
+        repuestos_problematicos: menorDuracion,
+        filtros: {
+          repuesto_id,
+          equipo_id,
+          limite_duracion,
+          limit
+        }
+      }
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo reporte duración repuestos:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/informes/indicadores:
+ *   get:
+ *     summary: Indicadores de rendimiento (KPIs)
+ *     tags: [Informes]
+ */
+router.get('/indicadores', async (req, res) => {
+  try {
+    const { fecha_inicio, fecha_fin } = req.query;
+    
+    const fechaInicio = fecha_inicio || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const fechaFin = fecha_fin || new Date().toISOString().split('T')[0];
+    
+    // KPIs de Solicitudes
+    const solicitudesKPIQuery = `
+      SELECT 
+        COUNT(*) as total_solicitudes,
+        COUNT(CASE WHEN estado = 'completada' THEN 1 END) as completadas,
+        COUNT(CASE WHEN estado = 'pendiente' THEN 1 END) as pendientes,
+        COUNT(CASE WHEN estado = 'en_proceso' THEN 1 END) as en_proceso,
+        AVG(CASE 
+          WHEN fecha_cierre IS NOT NULL 
+          THEN DATEDIFF(fecha_cierre, fecha_creacion) 
+        END) as tiempo_resolucion_promedio,
+        COUNT(CASE 
+          WHEN fecha_cierre IS NOT NULL AND DATEDIFF(fecha_cierre, fecha_creacion) <= 1 
+          THEN 1 
+        END) as resueltas_24h,
+        (COUNT(CASE WHEN estado = 'completada' THEN 1 END) / COUNT(*) * 100) as tasa_completitud,
+        COUNT(CASE WHEN prioridad = 'urgente' THEN 1 END) as urgentes
+      FROM solicitudes
+      WHERE fecha_creacion BETWEEN ? AND ?
+    `;
+    
+    const [solicitudesKPI] = await pool.execute(solicitudesKPIQuery, [fechaInicio, fechaFin]);
+    
+    // KPIs de Órdenes
+    const ordenesKPIQuery = `
+      SELECT 
+        COUNT(*) as total_ordenes,
+        COUNT(CASE WHEN estado = 'ejecutada' THEN 1 END) as ejecutadas,
+        COUNT(CASE WHEN estado = 'abierta' THEN 1 END) as abiertas,
+        AVG(costo_total) as costo_promedio,
+        SUM(costo_total) as costo_total,
+        AVG(CASE 
+          WHEN fecha_cierre IS NOT NULL 
+          THEN DATEDIFF(fecha_cierre, fecha_creacion) 
+        END) as tiempo_ejecucion_promedio
+      FROM ordenes
+      WHERE fecha_creacion BETWEEN ? AND ?
+    `;
+    
+    const [ordenesKPI] = await pool.execute(ordenesKPIQuery, [fechaInicio, fechaFin]);
+    
+    // KPIs de Visitas
+    const visitasKPIQuery = `
+      SELECT 
+        COUNT(*) as total_visitas,
+        COUNT(CASE WHEN estado = 'completada' THEN 1 END) as completadas,
+        COUNT(CASE WHEN estado = 'programada' THEN 1 END) as programadas,
+        AVG(calificacion) as calificacion_promedio,
+        COUNT(CASE WHEN calificacion >= 4 THEN 1 END) as visitas_satisfactorias,
+        AVG(duracion_horas) as duracion_promedio
+      FROM visitas
+      WHERE fecha_programada BETWEEN ? AND ?
+    `;
+    
+    const [visitasKPI] = await pool.execute(visitasKPIQuery, [fechaInicio, fechaFin]);
+    
+    // KPIs de Equipos
+    const equiposKPIQuery = `
+      SELECT 
+        COUNT(*) as total_equipos,
+        COUNT(CASE WHEN estado = 'activo' THEN 1 END) as equipos_activos,
+        COUNT(CASE WHEN estado = 'mantenimiento' THEN 1 END) as en_mantenimiento,
+        COUNT(CASE WHEN estado = 'inactivo' THEN 1 END) as inactivos,
+        (COUNT(CASE WHEN estado = 'activo' THEN 1 END) / COUNT(*) * 100) as disponibilidad_equipos
+      FROM equipos
+    `;
+    
+    const [equiposKPI] = await pool.execute(equiposKPIQuery);
+    
+    // KPIs de Técnicos
+    const tecnicosKPIQuery = `
+      SELECT 
+        COUNT(DISTINCT t.id) as total_tecnicos,
+        AVG(visitas_por_tecnico.total_visitas) as visitas_promedio_por_tecnico,
+        AVG(calificaciones.calificacion_promedio) as calificacion_promedio_tecnicos
+      FROM usuarios t
+      LEFT JOIN (
+        SELECT tecnico_id, COUNT(*) as total_visitas
+        FROM visitas
+        WHERE fecha_programada BETWEEN ? AND ?
+        GROUP BY tecnico_id
+      ) visitas_por_tecnico ON t.id = visitas_por_tecnico.tecnico_id
+      LEFT JOIN (
+        SELECT tecnico_id, AVG(calificacion) as calificacion_promedio
+        FROM visitas
+        WHERE fecha_programada BETWEEN ? AND ? AND calificacion IS NOT NULL
+        GROUP BY tecnico_id
+      ) calificaciones ON t.id = calificaciones.tecnico_id
+      WHERE t.rol = 'tecnico' AND t.estado = 'activo'
+    `;
+    
+    const [tecnicosKPI] = await pool.execute(tecnicosKPIQuery, [fechaInicio, fechaFin, fechaInicio, fechaFin]);
+    
+    // KPIs Financieros
+    const financierosKPIQuery = `
+      SELECT 
+        SUM(o.costo_total) as ingresos_ordenes,
+        AVG(o.costo_total) as ticket_promedio,
+        COUNT(DISTINCT o.cliente_id) as clientes_activos,
+        SUM(ri.costo_total) as costo_repuestos,
+        (SUM(o.costo_total) - SUM(ri.costo_total)) as margen_bruto
+      FROM ordenes o
+      LEFT JOIN repuestos_instalados ri ON o.id = ri.orden_id
+      WHERE o.fecha_creacion BETWEEN ? AND ?
+    `;
+    
+    const [financierosKPI] = await pool.execute(financierosKPIQuery, [fechaInicio, fechaFin]);
+    
+    // Tendencias mensuales
+    const tendenciasQuery = `
+      SELECT 
+        DATE_FORMAT(fecha_creacion, '%Y-%m') as mes,
+        COUNT(*) as total_solicitudes,
+        COUNT(CASE WHEN estado = 'completada' THEN 1 END) as completadas,
+        AVG(CASE 
+          WHEN fecha_cierre IS NOT NULL 
+          THEN DATEDIFF(fecha_cierre, fecha_creacion) 
+        END) as tiempo_promedio
+      FROM solicitudes
+      WHERE fecha_creacion >= DATE_SUB(?, INTERVAL 12 MONTH)
+      GROUP BY DATE_FORMAT(fecha_creacion, '%Y-%m')
+      ORDER BY mes DESC
+      LIMIT 12
+    `;
+    
+    const [tendencias] = await pool.execute(tendenciasQuery, [fechaFin]);
+    
+    logger.info('Indicadores KPI obtenidos exitosamente');
+    
+    res.json({
+      success: true,
+      data: {
+        periodo: {
+          fecha_inicio: fechaInicio,
+          fecha_fin: fechaFin
+        },
+        kpis: {
+          solicitudes: (solicitudesKPI as any[])[0],
+          ordenes: (ordenesKPI as any[])[0],
+          visitas: (visitasKPI as any[])[0],
+          equipos: (equiposKPI as any[])[0],
+          tecnicos: (tecnicosKPI as any[])[0],
+          financieros: (financierosKPI as any[])[0]
+        },
+        tendencias: tendencias
+      }
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo indicadores KPI:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/informes/correctivos-resultados:
+ *   get:
+ *     summary: Resultados de mantenimientos correctivos
+ *     tags: [Informes]
+ */
+router.get('/correctivos-resultados', async (req, res) => {
+  try {
+    const { fecha_inicio, fecha_fin, tecnico_id, resultado, limit = 100 } = req.query;
+    
+    let query = `
+      SELECT 
+        o.id,
+        o.numero_orden,
+        o.fecha_creacion,
+        o.fecha_cierre,
+        o.estado,
+        o.resultado_trabajo,
+        o.observaciones_cierre,
+        o.costo_total,
+        o.tiempo_ejecucion,
+        o.satisfaccion_cliente,
+        s.codigo_solicitud,
+        s.descripcion_problema,
+        e.codigo_equipo,
+        e.nombre_equipo,
+        c.nombre as cliente_nombre,
+        sede.nombre as sede_nombre,
+        t.nombre as tecnico_nombre,
+        DATEDIFF(o.fecha_cierre, o.fecha_creacion) as dias_resolucion,
+        CASE 
+          WHEN o.satisfaccion_cliente >= 4 THEN 'EXCELENTE'
+          WHEN o.satisfaccion_cliente >= 3 THEN 'BUENO'
+          WHEN o.satisfaccion_cliente >= 2 THEN 'REGULAR'
+          ELSE 'MALO'
+        END as categoria_satisfaccion,
+        COUNT(ri.id) as repuestos_utilizados,
+        SUM(ri.costo_total) as costo_repuestos
+      FROM ordenes o
+      JOIN solicitudes s ON o.solicitud_id = s.id
+      JOIN equipos e ON s.equipo_id = e.id
+      JOIN clientes c ON e.cliente_id = c.id
+      JOIN sedes sede ON e.sede_id = sede.id
+      LEFT JOIN usuarios t ON o.tecnico_asignado_id = t.id
+      LEFT JOIN repuestos_instalados ri ON o.id = ri.orden_id
+      WHERE s.tipo_servicio = 'correctivo'
+        AND o.estado = 'ejecutada'
+    `;
+    
+    const params: any[] = [];
+    
+    if (fecha_inicio) {
+      query += ` AND o.fecha_cierre >= ?`;
+      params.push(fecha_inicio);
+    }
+    
+    if (fecha_fin) {
+      query += ` AND o.fecha_cierre <= ?`;
+      params.push(fecha_fin);
+    }
+    
+    if (tecnico_id) {
+      query += ` AND o.tecnico_asignado_id = ?`;
+      params.push(tecnico_id);
+    }
+    
+    if (resultado) {
+      query += ` AND o.resultado_trabajo = ?`;
+      params.push(resultado);
+    }
+    
+    query += `
+      GROUP BY o.id
+      ORDER BY o.fecha_cierre DESC
+      LIMIT ?
+    `;
+    params.push(parseInt(limit as string));
+    
+    const [rows] = await pool.execute(query, params);
+    
+    // Estadísticas de resultados
+    const statsQuery = `
+      SELECT 
+        COUNT(o.id) as total_correctivos,
+        COUNT(CASE WHEN o.resultado_trabajo = 'exitoso' THEN 1 END) as exitosos,
+        COUNT(CASE WHEN o.resultado_trabajo = 'parcial' THEN 1 END) as parciales,
+        COUNT(CASE WHEN o.resultado_trabajo = 'fallido' THEN 1 END) as fallidos,
+        (COUNT(CASE WHEN o.resultado_trabajo = 'exitoso' THEN 1 END) / COUNT(o.id) * 100) as tasa_exito,
+        AVG(o.satisfaccion_cliente) as satisfaccion_promedio,
+        AVG(DATEDIFF(o.fecha_cierre, o.fecha_creacion)) as tiempo_promedio_dias,
+        AVG(o.costo_total) as costo_promedio,
+        SUM(o.costo_total) as costo_total,
+        COUNT(CASE WHEN o.satisfaccion_cliente >= 4 THEN 1 END) as satisfaccion_alta
+      FROM ordenes o
+      JOIN solicitudes s ON o.solicitud_id = s.id
+      WHERE s.tipo_servicio = 'correctivo'
+        AND o.estado = 'ejecutada'
+    `;
+    
+    const statsParams = params.slice(0, -1);
+    const [statsRows] = await pool.execute(statsQuery, statsParams);
+    
+    // Técnicos con mejores resultados
+    const mejoresTecnicosQuery = `
+      SELECT 
+        t.nombre,
+        COUNT(o.id) as total_ordenes,
+        COUNT(CASE WHEN o.resultado_trabajo = 'exitoso' THEN 1 END) as exitosas,
+        (COUNT(CASE WHEN o.resultado_trabajo = 'exitoso' THEN 1 END) / COUNT(o.id) * 100) as tasa_exito,
+        AVG(o.satisfaccion_cliente) as satisfaccion_promedio,
+        AVG(DATEDIFF(o.fecha_cierre, o.fecha_creacion)) as tiempo_promedio,
+        AVG(o.costo_total) as costo_promedio
+      FROM ordenes o
+      JOIN solicitudes s ON o.solicitud_id = s.id
+      LEFT JOIN usuarios t ON o.tecnico_asignado_id = t.id
+      WHERE s.tipo_servicio = 'correctivo'
+        AND o.estado = 'ejecutada'
+        AND t.id IS NOT NULL
+      GROUP BY t.id, t.nombre
+      HAVING total_ordenes >= 5
+      ORDER BY tasa_exito DESC, satisfaccion_promedio DESC
+      LIMIT 10
+    `;
+    
+    const [mejoresTecnicos] = await pool.execute(mejoresTecnicosQuery, statsParams);
+    
+    logger.info(`Reporte correctivos resultados obtenido: ${(rows as any[]).length} registros`);
+    
+    res.json({
+      success: true,
+      data: {
+        correctivos: rows,
+        estadisticas: (statsRows as any[])[0],
+        mejores_tecnicos: mejoresTecnicos,
+        filtros: {
+          fecha_inicio,
+          fecha_fin,
+          tecnico_id,
+          resultado,
+          limit
+        }
+      }
+    });
+    
+  } catch (error) {
+    logger.error('Error obteniendo reporte correctivos resultados:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/real/informes/exportar:
+ *   post:
+ *     summary: Exportar cualquier reporte en formato Excel o PDF
+ *     tags: [Informes]
+ */
+router.post('/exportar', async (req, res) => {
+  try {
+    const { tipo_reporte, formato, filtros } = req.body;
+    
+    // Validar parámetros
+    const tiposValidos = [
+      'correctivos-equipo',
+      'repuestos-instalados', 
+      'repuestos',
+      'fallos',
+      'duracion-repuestos',
+      'indicadores',
+      'correctivos-resultados'
+    ];
+    
+    if (!tiposValidos.includes(tipo_reporte)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Tipo de reporte no válido'
+      });
+    }
+    
+    if (!['excel', 'pdf', 'csv'].includes(formato)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Formato no válido. Use: excel, pdf o csv'
+      });
+    }
+    
+    // Por ahora, simular la exportación
+    // En implementación real aquí iría la lógica para generar archivos Excel/PDF
+    logger.info(`Solicitud de exportación: ${tipo_reporte} en formato ${formato}`);
+    
+    res.json({
+      success: true,
+      message: 'Exportación iniciada',
+      data: {
+        tipo_reporte,
+        formato,
+        filtros,
+        archivo_generado: `${tipo_reporte}_${Date.now()}.${formato}`,
+        url_descarga: `/api/real/informes/descargar/${tipo_reporte}_${Date.now()}.${formato}`,
+        fecha_generacion: new Date().toISOString()
+      }
+    });
+    
+  } catch (error) {
+    logger.error('Error en exportación de reporte:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+export default router;

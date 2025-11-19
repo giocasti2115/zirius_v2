@@ -1,0 +1,634 @@
+import { Request, Response } from 'express';
+import { DatabaseConnection } from '../config/database';
+import { NotFoundError, ValidationError, DatabaseError } from '../utils/errors';
+import { logger } from '../utils/logger';
+import { ResultSetHeader, RowDataPacket } from 'mysql2';
+
+interface TipoEquipo extends RowDataPacket {
+  id: number;
+  nombre: string;
+  descripcion?: string;
+  categoria: string;
+  clasificacion_riesgo: 'ALTO' | 'MEDIO' | 'BAJO';
+  requiere_calibracion: boolean;
+  vida_util_anos: number;
+  frecuencia_mantenimiento_meses: number;
+  especificaciones_tecnicas?: any;
+  normas_aplicables?: string[];
+  activo: boolean;
+  created_at: Date;
+  updated_at: Date;
+  created_by?: number;
+  updated_by?: number;
+}
+
+interface Marca extends RowDataPacket {
+  id: number;
+  nombre: string;
+  descripcion?: string;
+  pais_origen?: string;
+  sitio_web?: string;
+  telefono_soporte?: string;
+  email_soporte?: string;
+  contacto_comercial?: string;
+  direccion?: string;
+  activo: boolean;
+  created_at: Date;
+  updated_at: Date;
+  created_by?: number;
+  updated_by?: number;
+}
+
+interface Estado extends RowDataPacket {
+  id: number;
+  nombre: string;
+  descripcion?: string;
+  modulo: string;
+  color: string;
+  icono?: string;
+  orden: number;
+  es_final: boolean;
+  activo: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface Prioridad extends RowDataPacket {
+  id: number;
+  nombre: string;
+  descripcion?: string;
+  nivel: number;
+  color: string;
+  tiempo_respuesta_horas: number;
+  activo: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface Ciudad extends RowDataPacket {
+  id: number;
+  nombre: string;
+  departamento_id: number;
+  codigo_postal?: string;
+  activo: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface Departamento extends RowDataPacket {
+  id: number;
+  nombre: string;
+  codigo: string;
+  region: string;
+  activo: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface VariableSistema extends RowDataPacket {
+  id: number;
+  clave: string;
+  valor: string;
+  tipo: 'string' | 'number' | 'boolean' | 'json' | 'email' | 'url';
+  categoria: string;
+  descripcion?: string;
+  es_editable: boolean;
+  valor_por_defecto?: string;
+  validacion_regex?: string;
+  created_at: Date;
+  updated_at: Date;
+  updated_by?: number;
+}
+
+export class GeneralesController {
+  private db: DatabaseConnection;
+
+  constructor() {
+    this.db = DatabaseConnection.getInstance();
+  }
+
+  // ====================== TIPOS DE EQUIPOS ======================
+  
+  async getTiposEquipos(req: Request, res: Response): Promise<void> {
+    try {
+      const { page = 1, limit = 20, search = '', categoria = '', activo = '' } = req.query;
+      const offset = (Number(page) - 1) * Number(limit);
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (search) {
+        whereClause += ' AND (te.nombre LIKE ? OR te.descripcion LIKE ?)';
+        params.push(`%${search}%`, `%${search}%`);
+      }
+
+      if (categoria) {
+        whereClause += ' AND te.categoria = ?';
+        params.push(categoria);
+      }
+
+      if (activo !== '') {
+        whereClause += ' AND te.activo = ?';
+        params.push(activo === 'true');
+      }
+
+      const countQuery = `
+        SELECT COUNT(*) as total
+        FROM tipos_equipos te
+        ${whereClause}
+      `;
+
+      const dataQuery = `
+        SELECT 
+          te.*,
+          u1.nombre as created_by_name,
+          u2.nombre as updated_by_name
+        FROM tipos_equipos te
+        LEFT JOIN usuarios u1 ON te.created_by = u1.id
+        LEFT JOIN usuarios u2 ON te.updated_by = u2.id
+        ${whereClause}
+        ORDER BY te.created_at DESC
+        LIMIT ? OFFSET ?
+      `;
+
+      params.push(Number(limit), offset);
+
+      const [countResult] = await this.db.execute(countQuery, params.slice(0, params.length - 2));
+      const [rows] = await this.db.execute(dataQuery, params);
+
+      const total = (countResult as any[])[0].total;
+      const totalPages = Math.ceil(total / Number(limit));
+
+      res.json({
+        success: true,
+        data: rows,
+        pagination: {
+          page: Number(page),
+          limit: Number(limit),
+          total,
+          totalPages,
+          hasNext: Number(page) < totalPages,
+          hasPrev: Number(page) > 1
+        }
+      });
+    } catch (error) {
+      logger.error('Error getting tipos equipos:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor',
+        error: process.env.NODE_ENV === 'development' ? error : undefined
+      });
+    }
+  }
+
+  async createTipoEquipo(req: Request, res: Response): Promise<void> {
+    try {
+      const {
+        nombre,
+        descripcion,
+        categoria,
+        clasificacion_riesgo,
+        requiere_calibracion,
+        vida_util_anos,
+        frecuencia_mantenimiento_meses,
+        especificaciones_tecnicas,
+        normas_aplicables
+      } = req.body;
+
+      const userId = (req as any).user?.id;
+
+      if (!nombre || !categoria || !clasificacion_riesgo) {
+        res.status(400).json({
+          success: false,
+          message: 'Los campos nombre, categoria y clasificacion_riesgo son obligatorios'
+        });
+        return;
+      }
+
+      const query = `
+        INSERT INTO tipos_equipos (
+          nombre, descripcion, categoria, clasificacion_riesgo,
+          requiere_calibracion, vida_util_anos, frecuencia_mantenimiento_meses,
+          especificaciones_tecnicas, normas_aplicables, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+
+      const [result] = await this.db.execute(query, [
+        nombre,
+        descripcion || null,
+        categoria,
+        clasificacion_riesgo,
+        Boolean(requiere_calibracion),
+        vida_util_anos || null,
+        frecuencia_mantenimiento_meses || null,
+        especificaciones_tecnicas ? JSON.stringify(especificaciones_tecnicas) : null,
+        normas_aplicables ? JSON.stringify(normas_aplicables) : null,
+        userId
+      ]);
+
+      const insertId = (result as ResultSetHeader).insertId;
+
+      // Obtener el registro creado
+      const [newRecord] = await this.db.execute(
+        'SELECT * FROM tipos_equipos WHERE id = ?',
+        [insertId]
+      );
+
+      res.status(201).json({
+        success: true,
+        message: 'Tipo de equipo creado exitosamente',
+        data: (newRecord as TipoEquipo[])[0]
+      });
+    } catch (error) {
+      logger.error('Error creating tipo equipo:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  async updateTipoEquipo(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const userId = (req as any).user?.id;
+      const updateData = { ...req.body, updated_by: userId };
+
+      const setClause = Object.keys(updateData)
+        .map(key => `${key} = ?`)
+        .join(', ');
+
+      const query = `UPDATE tipos_equipos SET ${setClause} WHERE id = ?`;
+      const values = [...Object.values(updateData), id];
+
+      const [result] = await this.db.execute(query, values);
+
+      if ((result as ResultSetHeader).affectedRows === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'Tipo de equipo no encontrado'
+        });
+        return;
+      }
+
+      const [updated] = await this.db.execute(
+        'SELECT * FROM tipos_equipos WHERE id = ?',
+        [id]
+      );
+
+      res.json({
+        success: true,
+        message: 'Tipo de equipo actualizado exitosamente',
+        data: (updated as TipoEquipo[])[0]
+      });
+    } catch (error) {
+      logger.error('Error updating tipo equipo:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  async deleteTipoEquipo(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+
+      const [result] = await this.db.execute(
+        'UPDATE tipos_equipos SET activo = false WHERE id = ?',
+        [id]
+      );
+
+      if ((result as ResultSetHeader).affectedRows === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'Tipo de equipo no encontrado'
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        message: 'Tipo de equipo desactivado exitosamente'
+      });
+    } catch (error) {
+      logger.error('Error deleting tipo equipo:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // ====================== MARCAS ======================
+  
+  async getMarcas(req: Request, res: Response): Promise<void> {
+    try {
+      const { page = 1, limit = 20, search = '', activo = '' } = req.query;
+      const offset = (Number(page) - 1) * Number(limit);
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (search) {
+        whereClause += ' AND (m.nombre LIKE ? OR m.descripcion LIKE ?)';
+        params.push(`%${search}%`, `%${search}%`);
+      }
+
+      if (activo !== '') {
+        whereClause += ' AND m.activo = ?';
+        params.push(activo === 'true');
+      }
+
+      const countQuery = `SELECT COUNT(*) as total FROM marcas m ${whereClause}`;
+      const dataQuery = `
+        SELECT m.*, u1.nombre as created_by_name, u2.nombre as updated_by_name
+        FROM marcas m
+        LEFT JOIN usuarios u1 ON m.created_by = u1.id
+        LEFT JOIN usuarios u2 ON m.updated_by = u2.id
+        ${whereClause}
+        ORDER BY m.created_at DESC
+        LIMIT ? OFFSET ?
+      `;
+
+      params.push(Number(limit), offset);
+
+      const [countResult] = await this.db.execute(countQuery, params.slice(0, params.length - 2));
+      const [rows] = await this.db.execute(dataQuery, params);
+
+      const total = (countResult as any[])[0].total;
+      const totalPages = Math.ceil(total / Number(limit));
+
+      res.json({
+        success: true,
+        data: rows,
+        pagination: {
+          page: Number(page),
+          limit: Number(limit),
+          total,
+          totalPages,
+          hasNext: Number(page) < totalPages,
+          hasPrev: Number(page) > 1
+        }
+      });
+    } catch (error) {
+      logger.error('Error getting marcas:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // ====================== ESTADOS Y PRIORIDADES ======================
+  
+  async getEstados(req: Request, res: Response): Promise<void> {
+    try {
+      const { modulo = '', activo = '' } = req.query;
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (modulo) {
+        whereClause += ' AND modulo = ?';
+        params.push(modulo);
+      }
+
+      if (activo !== '') {
+        whereClause += ' AND activo = ?';
+        params.push(activo === 'true');
+      }
+
+      const query = `
+        SELECT * FROM estados 
+        ${whereClause}
+        ORDER BY modulo, orden ASC
+      `;
+
+      const [rows] = await this.db.execute(query, params);
+
+      res.json({
+        success: true,
+        data: rows
+      });
+    } catch (error) {
+      logger.error('Error getting estados:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  async getPrioridades(req: Request, res: Response): Promise<void> {
+    try {
+      const { activo = '' } = req.query;
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (activo !== '') {
+        whereClause += ' AND activo = ?';
+        params.push(activo === 'true');
+      }
+
+      const query = `
+        SELECT * FROM prioridades 
+        ${whereClause}
+        ORDER BY nivel ASC
+      `;
+
+      const [rows] = await this.db.execute(query, params);
+
+      res.json({
+        success: true,
+        data: rows
+      });
+    } catch (error) {
+      logger.error('Error getting prioridades:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // ====================== CIUDADES Y DEPARTAMENTOS ======================
+  
+  async getDepartamentos(req: Request, res: Response): Promise<void> {
+    try {
+      const { region = '', activo = '' } = req.query;
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (region) {
+        whereClause += ' AND region = ?';
+        params.push(region);
+      }
+
+      if (activo !== '') {
+        whereClause += ' AND activo = ?';
+        params.push(activo === 'true');
+      }
+
+      const query = `
+        SELECT * FROM departamentos 
+        ${whereClause}
+        ORDER BY nombre ASC
+      `;
+
+      const [rows] = await this.db.execute(query, params);
+
+      res.json({
+        success: true,
+        data: rows
+      });
+    } catch (error) {
+      logger.error('Error getting departamentos:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  async getCiudades(req: Request, res: Response): Promise<void> {
+    try {
+      const { departamento_id = '', activo = '' } = req.query;
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (departamento_id) {
+        whereClause += ' AND c.departamento_id = ?';
+        params.push(departamento_id);
+      }
+
+      if (activo !== '') {
+        whereClause += ' AND c.activo = ?';
+        params.push(activo === 'true');
+      }
+
+      const query = `
+        SELECT c.*, d.nombre as departamento_nombre, d.region
+        FROM ciudades c
+        INNER JOIN departamentos d ON c.departamento_id = d.id
+        ${whereClause}
+        ORDER BY c.nombre ASC
+      `;
+
+      const [rows] = await this.db.execute(query, params);
+
+      res.json({
+        success: true,
+        data: rows
+      });
+    } catch (error) {
+      logger.error('Error getting ciudades:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // ====================== VARIABLES DE SISTEMA ======================
+  
+  async getVariablesSistema(req: Request, res: Response): Promise<void> {
+    try {
+      const { categoria = '', tipo = '', es_editable = '' } = req.query;
+
+      let whereClause = 'WHERE 1=1';
+      const params: any[] = [];
+
+      if (categoria) {
+        whereClause += ' AND categoria = ?';
+        params.push(categoria);
+      }
+
+      if (tipo) {
+        whereClause += ' AND tipo = ?';
+        params.push(tipo);
+      }
+
+      if (es_editable !== '') {
+        whereClause += ' AND es_editable = ?';
+        params.push(es_editable === 'true');
+      }
+
+      const query = `
+        SELECT vs.*, u.nombre as updated_by_name
+        FROM variables_sistema vs
+        LEFT JOIN usuarios u ON vs.updated_by = u.id
+        ${whereClause}
+        ORDER BY vs.categoria, vs.clave ASC
+      `;
+
+      const [rows] = await this.db.execute(query, params);
+
+      res.json({
+        success: true,
+        data: rows
+      });
+    } catch (error) {
+      logger.error('Error getting variables sistema:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  async updateVariableSistema(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const { valor } = req.body;
+      const userId = (req as any).user?.id;
+
+      // Verificar que la variable sea editable
+      const [variable] = await this.db.execute(
+        'SELECT * FROM variables_sistema WHERE id = ? AND es_editable = true',
+        [id]
+      );
+
+      if ((variable as VariableSistema[]).length === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'Variable no encontrada o no es editable'
+        });
+        return;
+      }
+
+      const [result] = await this.db.execute(
+        'UPDATE variables_sistema SET valor = ?, updated_by = ? WHERE id = ?',
+        [valor, userId, id]
+      );
+
+      if ((result as ResultSetHeader).affectedRows === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'Variable no encontrada'
+        });
+        return;
+      }
+
+      const [updated] = await this.db.execute(
+        'SELECT * FROM variables_sistema WHERE id = ?',
+        [id]
+      );
+
+      res.json({
+        success: true,
+        message: 'Variable actualizada exitosamente',
+        data: (updated as VariableSistema[])[0]
+      });
+    } catch (error) {
+      logger.error('Error updating variable sistema:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+}

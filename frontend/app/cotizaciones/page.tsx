@@ -1,0 +1,462 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { 
+  Table, 
+  TableBody, 
+  TableCell, 
+  TableHead, 
+  TableHeader, 
+  TableRow 
+} from '@/components/ui/table';
+import { 
+  Search, 
+  Plus, 
+  FileText, 
+  DollarSign, 
+  Calendar,
+  User,
+  Mail,
+  Eye,
+  Edit,
+  Download
+} from 'lucide-react';
+import Link from 'next/link';
+import { cotizacionesService, Cotizacion } from '@/lib/services/cotizaciones.service';
+
+export default function CotizacionesPage() {
+  // Estados principales
+  const [cotizaciones, setCotizaciones] = useState<Cotizacion[]>([]);
+  const [estadisticas, setEstadisticas] = useState<any>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Estados de filtros
+  const [busqueda, setBusqueda] = useState('');
+  const [filtroEstado, setFiltroEstado] = useState<string>('');
+  const [filtroCliente, setFiltroCliente] = useState<string>('');
+  
+  // Estados de paginación
+  const [paginaActual, setPaginaActual] = useState(1);
+  const [registrosPorPagina, setRegistrosPorPagina] = useState(25);
+  const [totalRegistros, setTotalRegistros] = useState(0);
+
+  useEffect(() => {
+    cargarDatos();
+  }, [paginaActual, registrosPorPagina]);
+
+  useEffect(() => {
+    setPaginaActual(1);
+  }, [busqueda, filtroEstado, filtroCliente]);
+
+  const cargarDatos = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      console.log('🔄 Cargando cotizaciones...');
+      
+      const [cotizacionesData, estadisticasData] = await Promise.all([
+        cotizacionesService.obtenerCotizaciones({ 
+          limit: registrosPorPagina,
+          page: paginaActual,
+          numero_cotizacion: busqueda || undefined,
+          estado: filtroEstado || undefined,
+          cliente: filtroCliente || undefined
+        }),
+        cotizacionesService.obtenerEstadisticas()
+      ]);
+
+      if (cotizacionesData.success) {
+        setCotizaciones(cotizacionesData.data.cotizaciones);
+        setTotalRegistros(cotizacionesData.data.total);
+        console.log('✅ Cotizaciones cargadas:', cotizacionesData.data.cotizaciones.length);
+      } else {
+        setError('Error cargando cotizaciones');
+      }
+
+      if (estadisticasData.success) {
+        setEstadisticas(estadisticasData.data);
+      }
+      
+    } catch (error) {
+      console.error('❌ Error:', error);
+      setError('Error de conexión');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleBuscar = () => {
+    cargarDatos();
+  };
+
+  // Funciones de paginación
+  const totalPaginas = Math.ceil(totalRegistros / registrosPorPagina);
+  const paginaAnterior = () => setPaginaActual(prev => Math.max(prev - 1, 1));
+  const paginaSiguiente = () => setPaginaActual(prev => Math.min(prev + 1, totalPaginas));
+  const irAPagina = (pagina: number) => setPaginaActual(pagina);
+
+  const getEstadoBadge = (estado: string) => {
+    const colores = {
+      'pendiente': 'bg-yellow-50 text-yellow-700 border-yellow-200',
+      'enviada': 'bg-blue-50 text-blue-700 border-blue-200',
+      'aprobada': 'bg-green-50 text-green-700 border-green-200',
+      'rechazada': 'bg-red-50 text-red-700 border-red-200',
+      'vencida': 'bg-gray-50 text-gray-700 border-gray-200'
+    };
+
+    return (
+      <Badge variant="outline" className={colores[estado as keyof typeof colores] || 'bg-gray-50 text-gray-700 border-gray-200'}>
+        {estado?.charAt(0).toUpperCase() + estado?.slice(1)}
+      </Badge>
+    );
+  };
+
+  const formatearValor = (valor: number) => {
+    return new Intl.NumberFormat('es-CO', {
+      style: 'currency',
+      currency: 'COP',
+      minimumFractionDigits: 0
+    }).format(valor);
+  };
+
+  const formatearFecha = (fecha: string) => {
+    return new Date(fecha).toLocaleDateString('es-ES', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+  };
+
+  if (loading && cotizaciones.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Gestión de Cotizaciones</h1>
+          <p className="text-gray-600 mt-1">
+            Administra cotizaciones y presupuestos para clientes
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline">
+            <Download className="w-4 h-4 mr-2" />
+            Exportar
+          </Button>
+          <Button size="sm" className="bg-blue-600 hover:bg-blue-700">
+            <Plus className="w-4 h-4 mr-2" />
+            Nueva Cotización
+          </Button>
+        </div>
+      </div>
+
+      {/* Estadísticas */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card className="border-l-4 border-l-blue-500">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-100 text-blue-600">
+                <FileText className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-gray-900">{estadisticas.total || 0}</p>
+                <p className="text-xs text-gray-600">Total Cotizaciones</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-yellow-500">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-yellow-100 text-yellow-600">
+                <Calendar className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-gray-900">{estadisticas.pendientes || 0}</p>
+                <p className="text-xs text-gray-600">Pendientes</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-green-500">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green-100 text-green-600">
+                <DollarSign className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-gray-900">{estadisticas.aprobadas || 0}</p>
+                <p className="text-xs text-gray-600">Aprobadas</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-purple-500">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-purple-100 text-purple-600">
+                <DollarSign className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-lg font-bold text-gray-900">{formatearValor(estadisticas.valor_total_mes || 0)}</p>
+                <p className="text-xs text-gray-600">Valor Total Mes</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Filtros y Búsqueda */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Search className="w-5 h-5" />
+            Filtros de Búsqueda
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div>
+              <Input
+                placeholder="Buscar por número..."
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                className="w-full"
+              />
+            </div>
+            <div>
+              <Input
+                placeholder="Buscar por cliente..."
+                value={filtroCliente}
+                onChange={(e) => setFiltroCliente(e.target.value)}
+                className="w-full"
+              />
+            </div>
+            <div>
+              <select
+                value={filtroEstado}
+                onChange={(e) => setFiltroEstado(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Todos los estados</option>
+                <option value="pendiente">Pendiente</option>
+                <option value="enviada">Enviada</option>
+                <option value="aprobada">Aprobada</option>
+                <option value="rechazada">Rechazada</option>
+                <option value="vencida">Vencida</option>
+              </select>
+            </div>
+            <div>
+              <Button onClick={handleBuscar} className="w-full">
+                <Search className="w-4 h-4 mr-2" />
+                Buscar
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Tabla de Cotizaciones */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between">
+            <span>Listado de Cotizaciones ({totalRegistros.toLocaleString()} total)</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-md p-4 mb-4">
+              <p className="text-red-800">{error}</p>
+            </div>
+          )}
+
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="border rounded-lg overflow-hidden">
+                <div className="max-h-[500px] overflow-y-auto">
+                  <Table>
+                    <TableHeader className="sticky top-0 bg-gray-50 z-10">
+                      <TableRow>
+                        <TableHead className="w-[120px]">Número</TableHead>
+                        <TableHead>Cliente</TableHead>
+                        <TableHead>Descripción</TableHead>
+                        <TableHead>Estado</TableHead>
+                        <TableHead>Fecha</TableHead>
+                        <TableHead>Valor Total</TableHead>
+                        <TableHead>Items</TableHead>
+                        <TableHead className="w-[100px]">Acciones</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {cotizaciones.map((cotizacion) => (
+                        <TableRow key={cotizacion.id} className="hover:bg-gray-50">
+                          <TableCell className="font-mono text-xs">
+                            {cotizacion.numero_cotizacion}
+                          </TableCell>
+                          <TableCell>
+                            <div>
+                              <div className="font-medium text-gray-900">{cotizacion.cliente_nombre}</div>
+                              <div className="text-xs text-gray-500 flex items-center gap-1">
+                                <User className="w-3 h-3" />
+                                {cotizacion.contacto_cliente}
+                              </div>
+                              <div className="text-xs text-gray-500 flex items-center gap-1">
+                                <Mail className="w-3 h-3" />
+                                {cotizacion.email_cliente}
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="text-sm">{cotizacion.descripcion}</div>
+                            {cotizacion.observaciones && (
+                              <div className="text-xs text-gray-500 mt-1">{cotizacion.observaciones}</div>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {getEstadoBadge(cotizacion.estado)}
+                          </TableCell>
+                          <TableCell>
+                            <div className="text-sm">{formatearFecha(cotizacion.fecha)}</div>
+                            <div className="text-xs text-gray-500">
+                              Vence: {formatearFecha(cotizacion.fecha_vencimiento)}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="text-right">
+                              <div className="font-medium">{formatearValor(cotizacion.valor_total)}</div>
+                              <div className="text-xs text-gray-500">
+                                + IVA {formatearValor(cotizacion.valor_iva)}
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <div className="text-sm font-medium">{cotizacion.items_count}</div>
+                            <div className="text-xs text-gray-500">ítems</div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex gap-1">
+                              <Button size="sm" variant="ghost" className="h-8 w-8 p-0">
+                                <Eye className="w-4 h-4" />
+                              </Button>
+                              <Button size="sm" variant="ghost" className="h-8 w-8 p-0">
+                                <Edit className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+
+              {/* Información de Registros y Paginación */}
+              {totalRegistros > 0 && (
+                <div className="flex items-center justify-between px-2 py-3 border-t bg-gray-50 rounded-b-lg">
+                  <div className="flex items-center gap-4 text-sm text-gray-600">
+                    <span>
+                      Mostrando {((paginaActual - 1) * registrosPorPagina) + 1} a{' '}
+                      {Math.min(paginaActual * registrosPorPagina, totalRegistros)} de{' '}
+                      {totalRegistros.toLocaleString()} registros
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs">Filas por página:</span>
+                      <select 
+                        value={registrosPorPagina}
+                        onChange={(e) => {
+                          setRegistrosPorPagina(Number(e.target.value));
+                          setPaginaActual(1);
+                        }}
+                        className="px-2 py-1 text-xs border rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      >
+                        <option value={10}>10</option>
+                        <option value={25}>25</option>
+                        <option value={50}>50</option>
+                        <option value={100}>100</option>
+                      </select>
+                    </div>
+                  </div>
+                  
+                  {totalPaginas > 1 && (
+                    <div className="flex items-center gap-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={paginaAnterior}
+                      disabled={paginaActual === 1}
+                      className="px-3 py-1 text-sm"
+                    >
+                      Anterior
+                    </Button>
+                    
+                    {/* Números de página */}
+                    <div className="flex gap-1">
+                      {Array.from({ length: Math.min(5, totalPaginas) }, (_, i) => {
+                        const pagina = i + 1;
+                        return (
+                          <Button
+                            key={pagina}
+                            variant={paginaActual === pagina ? "default" : "outline"}
+                            size="sm"
+                            onClick={() => irAPagina(pagina)}
+                            className="px-3 py-1 text-sm w-8"
+                          >
+                            {pagina}
+                          </Button>
+                        );
+                      })}
+                      {totalPaginas > 5 && (
+                        <>
+                          <span className="px-2 py-1 text-sm text-gray-500">...</span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => irAPagina(totalPaginas)}
+                            className="px-3 py-1 text-sm"
+                          >
+                            {totalPaginas}
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                    
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={paginaSiguiente}
+                      disabled={paginaActual === totalPaginas}
+                      className="px-3 py-1 text-sm"
+                    >
+                      Siguiente
+                    </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

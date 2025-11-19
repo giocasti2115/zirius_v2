@@ -1,0 +1,164 @@
+import { Router } from 'express';
+import { GeneralesController } from '../controllers/GeneralesController';
+import { authMiddleware } from '../middleware/auth';
+import { validateRequest } from '../middleware/validation';
+import { body, query, param } from 'express-validator';
+import { 
+  validateGeneralesPermissions, 
+  validateSystemVariablePermissions,
+  sanitizeGeneralesInput,
+  validateRateLimit,
+  validateDataIntegrity,
+  auditGeneralesChanges 
+} from '../middleware/generalesValidation';
+import {
+  tipoEquipoValidation,
+  marcaValidation,
+  estadoValidation,
+  prioridadValidation,
+  variableSistemaValidation,
+  commonValidation
+} from '../validations/generalesValidations';
+import { handleValidationErrors } from '../middleware/errorHandler';
+
+const router = Router();
+const generalesController = new GeneralesController();
+
+// Aplicar middlewares globales a todas las rutas
+router.use(sanitizeGeneralesInput);
+router.use(auditGeneralesChanges);
+
+// ====================== TIPOS DE EQUIPOS ======================
+
+router.get('/tipos-equipos', 
+  authMiddleware,
+  [
+    query('page').optional().isInt({ min: 1 }).withMessage('La página debe ser un número entero mayor a 0'),
+    query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('El límite debe estar entre 1 y 100'),
+    query('search').optional().isString().trim(),
+    query('categoria').optional().isString().trim(),
+    query('activo').optional().isIn(['true', 'false']).withMessage('activo debe ser true o false')
+  ],
+  validateRequest,
+  generalesController.getTiposEquipos.bind(generalesController)
+);
+
+router.post('/tipos-equipos',
+  authMiddleware,
+  [
+    body('nombre').notEmpty().withMessage('El nombre es obligatorio'),
+    body('categoria').notEmpty().withMessage('La categoría es obligatoria'),
+    body('clasificacion_riesgo').isIn(['ALTO', 'MEDIO', 'BAJO']).withMessage('Clasificación de riesgo inválida'),
+    body('descripcion').optional().isString().trim(),
+    body('requiere_calibracion').optional().isBoolean(),
+    body('vida_util_anos').optional().isInt({ min: 1 }).withMessage('Vida útil debe ser mayor a 0'),
+    body('frecuencia_mantenimiento_meses').optional().isInt({ min: 1 }).withMessage('Frecuencia debe ser mayor a 0'),
+    body('especificaciones_tecnicas').optional().isObject(),
+    body('normas_aplicables').optional().isArray()
+  ],
+  validateRequest,
+  generalesController.createTipoEquipo.bind(generalesController)
+);
+
+router.put('/tipos-equipos/:id',
+  authMiddleware,
+  [
+    param('id').isInt({ min: 1 }).withMessage('ID inválido'),
+    body('nombre').optional().notEmpty().withMessage('El nombre no puede estar vacío'),
+    body('categoria').optional().notEmpty().withMessage('La categoría no puede estar vacía'),
+    body('clasificacion_riesgo').optional().isIn(['ALTO', 'MEDIO', 'BAJO']).withMessage('Clasificación de riesgo inválida')
+  ],
+  validateRequest,
+  generalesController.updateTipoEquipo.bind(generalesController)
+);
+
+router.delete('/tipos-equipos/:id',
+  authMiddleware,
+  [
+    param('id').isInt({ min: 1 }).withMessage('ID inválido')
+  ],
+  validateRequest,
+  generalesController.deleteTipoEquipo.bind(generalesController)
+);
+
+// ====================== MARCAS ======================
+
+router.get('/marcas',
+  authMiddleware,
+  [
+    query('page').optional().isInt({ min: 1 }),
+    query('limit').optional().isInt({ min: 1, max: 100 }),
+    query('search').optional().isString().trim(),
+    query('activo').optional().isIn(['true', 'false'])
+  ],
+  validateRequest,
+  generalesController.getMarcas.bind(generalesController)
+);
+
+// ====================== ESTADOS Y PRIORIDADES ======================
+
+router.get('/estados',
+  authMiddleware,
+  [
+    query('modulo').optional().isString().trim(),
+    query('activo').optional().isIn(['true', 'false'])
+  ],
+  validateRequest,
+  generalesController.getEstados.bind(generalesController)
+);
+
+router.get('/prioridades',
+  authMiddleware,
+  [
+    query('activo').optional().isIn(['true', 'false'])
+  ],
+  validateRequest,
+  generalesController.getPrioridades.bind(generalesController)
+);
+
+// ====================== CIUDADES Y DEPARTAMENTOS ======================
+
+router.get('/departamentos',
+  authMiddleware,
+  [
+    query('region').optional().isString().trim(),
+    query('activo').optional().isIn(['true', 'false'])
+  ],
+  validateRequest,
+  generalesController.getDepartamentos.bind(generalesController)
+);
+
+router.get('/ciudades',
+  authMiddleware,
+  [
+    query('departamento_id').optional().isInt({ min: 1 }),
+    query('activo').optional().isIn(['true', 'false'])
+  ],
+  validateRequest,
+  generalesController.getCiudades.bind(generalesController)
+);
+
+// ====================== VARIABLES DE SISTEMA ======================
+
+router.get('/variables-sistema',
+  authMiddleware,
+  [
+    query('categoria').optional().isString().trim(),
+    query('tipo').optional().isIn(['string', 'number', 'boolean', 'json', 'email', 'url']),
+    query('es_editable').optional().isIn(['true', 'false'])
+  ],
+  validateRequest,
+  generalesController.getVariablesSistema.bind(generalesController)
+);
+
+router.put('/variables-sistema/:id',
+  authMiddleware,
+  [
+    param('id').isInt({ min: 1 }).withMessage('ID inválido'),
+    body('valor').notEmpty().withMessage('El valor es obligatorio')
+  ],
+  validateRequest,
+  generalesController.updateVariableSistema.bind(generalesController)
+);
+
+export default router;

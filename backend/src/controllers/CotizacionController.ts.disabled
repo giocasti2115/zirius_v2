@@ -1,0 +1,1338 @@
+import { Request, Response } from 'express';
+import DatabaseConnection from '../config/database';
+import Joi from 'joi';
+
+// Esquemas de validación
+const cotizacionQuerySchema = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(100).default(10),
+  estado: Joi.number().integer().valid(1, 2, 3),
+  cliente_id: Joi.number().integer().positive(),
+  created_by: Joi.number().integer().positive(),
+  fecha_desde: Joi.date().iso(),
+  fecha_hasta: Joi.date().iso(),
+  sort_by: Joi.string().valid('creacion', 'cambio_estado', 'id_estado', 'id').default('creacion'),
+  sort_order: Joi.string().valid('ASC', 'DESC').default('DESC')
+});
+
+const cotizacionCreateSchema = Joi.object({
+  id_cliente: Joi.number().integer().positive().required(),
+  titulo: Joi.string().min(5).max(255).required(),
+  descripcion: Joi.string().min(10).max(1000).required(),
+  valor_total: Joi.number().positive().required(),
+  fecha_vencimiento: Joi.date().iso().min('now').required(),
+  observaciones: Joi.string().max(500),
+  tiempo_entrega: Joi.string().max(255),
+});
+
+const cotizacionUpdateSchema = Joi.object({
+  titulo: Joi.string().min(5).max(255),
+  descripcion: Joi.string().min(10).max(1000),
+  valor_total: Joi.number().positive(),
+  fecha_vencimiento: Joi.date().iso().min('now'),
+  observaciones: Joi.string().max(500),
+  tiempo_entrega: Joi.string().max(255),
+  id_estado: Joi.number().integer().valid(1, 2, 3)
+});
+
+export class CotizacionController {
+  /**
+   * Obtener todas las cotizaciones
+   */
+  static async getAll(req: Request, res: Response): Promise<void> {
+    try {
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      const offset = (page - 1) * limit;
+
+      const cotizacionesQuery = `
+        SELECT 
+          cot.id,
+          cot.id_cliente,
+          cot.creacion as fecha,
+          cot.id_estado,
+          cot.mensaje,
+          c.nombre as cliente,
+          CASE 
+            WHEN cot.id_estado = 1 THEN 'pendiente'
+            WHEN cot.id_estado = 2 THEN 'aprobada'
+            WHEN cot.id_estado = 3 THEN 'rechazada'
+            ELSE 'desconocido'
+          END as estado,
+          0 as valor_total
+        FROM cotizaciones cot
+        LEFT JOIN clientes c ON cot.id_cliente = c.id
+        WHERE cot.activo = 1
+        ORDER BY cot.id DESC
+        LIMIT ? OFFSET ?
+      `;
+
+      const countQuery = `SELECT COUNT(*) as total FROM cotizaciones`;
+
+      const [cotizaciones, countResult] = await Promise.all([
+        DatabaseConnection.query(cotizacionesQuery, [limit, offset]),
+        DatabaseConnection.query(countQuery)
+      ]);
+
+      const total = Array.isArray(countResult) && countResult.length > 0 ? 
+        (countResult[0] as any).total : 0;
+
+      res.json({
+        success: true,
+        data: {
+          cotizaciones,
+          pagination: {
+            page,
+            limit,
+            total,
+            pages: Math.ceil(total / limit)
+          }
+        }
+      });
+
+    } catch (error) {
+      console.error('Error al obtener cotizaciones:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  /**
+   * Obtener estadísticas de cotizaciones
+   */
+  static async getStats(req: Request, res: Response): Promise<void> {
+    try {
+      const statsQuery = `
+        SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN id_estado = 1 THEN 1 ELSE 0 END) as pendientes,
+          SUM(CASE WHEN id_estado = 2 THEN 1 ELSE 0 END) as aprobadas,
+          SUM(CASE WHEN id_estado = 3 THEN 1 ELSE 0 END) as rechazadas,
+          0 as valor_total_mes
+        FROM cotizaciones
+        WHERE activo = 1
+      `;
+
+      const clientesQuery = `
+        SELECT 
+          c.nombre as cliente_nombre,
+          COUNT(cot.id) as total_cotizaciones
+        FROM cotizaciones cot
+        LEFT JOIN clientes c ON cot.id_cliente = c.id
+        WHERE cot.activo = 1
+        GROUP BY cot.id_cliente, c.nombre
+        ORDER BY total_cotizaciones DESC
+        LIMIT 10
+      `;
+
+      const [generalStats, clientesStats] = await Promise.all([
+        DatabaseConnection.query(statsQuery),
+        DatabaseConnection.query(clientesQuery)
+      ]);
+
+      const stats = Array.isArray(generalStats) && generalStats.length > 0 ? 
+        generalStats[0] : {
+          total: 0,
+          pendientes: 0,
+          aprobadas: 0,
+          rechazadas: 0,
+          valor_total_mes: 0
+        };
+
+      res.json({
+        success: true,
+        data: {
+          ...stats,
+          por_cliente: clientesStats || []
+        }
+      });
+
+    } catch (error) {
+      console.error('Error al obtener estadísticas de cotizaciones:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  /**
+   * Obtener cotización por ID
+   */
+  static async getById(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      
+      const query = `
+        SELECT 
+          cot.*,
+          c.nombre as cliente,
+          CASE 
+            WHEN cot.id_estado = 1 THEN 'pendiente'
+            WHEN cot.id_estado = 2 THEN 'aprobada'
+            WHEN cot.id_estado = 3 THEN 'rechazada'
+            ELSE 'desconocido'
+          END as estado_nombre
+        FROM cotizaciones cot
+        LEFT JOIN clientes c ON cot.id_cliente = c.id
+        WHERE cot.id = ? AND cot.activo = 1
+      `;
+
+      const result = await DatabaseConnection.query(query, [id]);
+
+      if (!Array.isArray(result) || result.length === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'Cotización no encontrada'
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: result[0]
+      });
+
+    } catch (error) {
+      console.error('Error al obtener cotización:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  /**
+   * Crear nueva cotización
+   */
+  static async create(req: Request, res: Response): Promise<void> {
+    try {
+      const { error, value } = cotizacionCreateSchema.validate(req.body);
+      
+      if (error) {
+        res.status(400).json({
+          success: false,
+          message: 'Datos inválidos',
+          errors: error.details.map(d => d.message)
+        });
+        return;
+      }
+
+      const query = `
+        INSERT INTO cotizaciones (
+          id_cliente, titulo, descripcion, valor_total, 
+          fecha_vencimiento, observaciones, tiempo_entrega,
+          id_estado, creacion, activo
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW(), 1)
+      `;
+
+      const values = [
+        value.id_cliente,
+        value.titulo,
+        value.descripcion,
+        value.valor_total,
+        value.fecha_vencimiento,
+        value.observaciones || null,
+        value.tiempo_entrega || null
+      ];
+
+      const result = await DatabaseConnection.query(query, values);
+      
+      res.status(201).json({
+        success: true,
+        message: 'Cotización creada exitosamente',
+        data: { id: (result as any).insertId }
+      });
+
+    } catch (error) {
+      console.error('Error al crear cotización:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  /**
+   * Actualizar cotización
+   */
+  static async update(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const { error, value } = cotizacionUpdateSchema.validate(req.body);
+      
+      if (error) {
+        res.status(400).json({
+          success: false,
+          message: 'Datos inválidos',
+          errors: error.details.map(d => d.message)
+        });
+        return;
+      }
+
+      const updateFields: string[] = [];
+      const updateValues: any[] = [];
+
+      Object.entries(value).forEach(([key, val]) => {
+        if (val !== undefined) {
+          updateFields.push(`${key} = ?`);
+          updateValues.push(val);
+        }
+      });
+
+      if (updateFields.length === 0) {
+        res.status(400).json({
+          success: false,
+          message: 'No hay campos para actualizar'
+        });
+        return;
+      }
+
+      updateValues.push(id);
+
+      const query = `
+        UPDATE cotizaciones 
+        SET ${updateFields.join(', ')}, cambio_estado = NOW()
+        WHERE id = ? AND activo = 1
+      `;
+
+      const result = await DatabaseConnection.query(query, updateValues);
+
+      if ((result as any).affectedRows === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'Cotización no encontrada'
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        message: 'Cotización actualizada exitosamente'
+      });
+
+    } catch (error) {
+      console.error('Error al actualizar cotización:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  /**
+   * Eliminar cotización (soft delete)
+   */
+  static async delete(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+
+      const query = 'UPDATE cotizaciones SET activo = 0 WHERE id = ?';
+      const result = await DatabaseConnection.query(query, [id]);
+
+      if ((result as any).affectedRows === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'Cotización no encontrada'
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        message: 'Cotización eliminada exitosamente'
+      });
+
+    } catch (error) {
+      console.error('Error al eliminar cotización:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+}
+
+        LEFT JOIN clientes c ON cot.id_cliente = c.id      // Query simple  search: Joi.string().min(1).max(255),
+
+        ORDER BY cot.creacion DESC
+
+        LIMIT ? OFFSET ?      const cotizacionesQuery = `  sort_by: Joi.string().valid('creacion', 'cambio_estado', 'id_estado', 'id').default('creacion'),
+
+      `;
+
+        SELECT   sort_order: Joi.string().valid('asc', 'desc').default('desc')
+
+      const countQuery = `SELECT COUNT(*) as total FROM cotizaciones`;
+
+          cot.id,});
+
+      const [cotizaciones, countResult] = await Promise.all([
+
+        DatabaseConnection.query(cotizacionesQuery, [limit, offset]),          cot.id_cliente,
+
+        DatabaseConnection.query(countQuery, [])
+
+      ]);          cot.creacion as fecha,const itemCotizacionSchema = Joi.object({
+
+
+
+      const total = Array.isArray(countResult) && countResult.length > 0 ? countResult[0].total : 0;          cot.id_estado,  tipo_item: Joi.string().valid('repuesto', 'servicio', 'mano_obra', 'desplazamiento', 'otros').required(),
+
+      const totalPages = Math.ceil(total / limit);
+
+          cot.mensaje,  descripcion: Joi.string().min(5).max(500).required(),
+
+      res.json({
+
+        success: true,          c.nombre as cliente,  cantidad: Joi.number().positive().required(),
+
+        cotizaciones: cotizaciones,
+
+        pagination: {          CASE   precio_unitario: Joi.number().positive().required(),
+
+          current_page: page,
+
+          per_page: limit,            WHEN cot.id_estado = 1 THEN 'pendiente'  descuento_porcentaje: Joi.number().min(0).max(100).default(0),
+
+          total_items: total,
+
+          total_pages: totalPages            WHEN cot.id_estado = 2 THEN 'aprobada'  observaciones: Joi.string().max(255).allow('')
+
+        }
+
+      });            WHEN cot.id_estado = 3 THEN 'rechazada'});
+
+
+
+    } catch (error) {            ELSE 'desconocido'
+
+      console.error('Error al obtener cotizaciones:', error);
+
+      res.status(500).json({          END as estado,const cotizacionCreateSchema = Joi.object({
+
+        success: false,
+
+        message: 'Error interno del servidor',          0 as valor_total  solicitud_id: Joi.number().integer().positive().required(),
+
+        error: error instanceof Error ? error.message : 'Error desconocido'
+
+      });        FROM cotizaciones cot  cliente_id: Joi.number().integer().positive().required(),
+
+    }
+
+  }        LEFT JOIN clientes c ON cot.id_cliente = c.id  sede_id: Joi.number().integer().positive().required(),
+
+
+
+  static async getStats(req: Request, res: Response): Promise<void> {        ORDER BY cot.creacion DESC  titulo: Joi.string().min(5).max(255).required(),
+
+    try {
+
+      const statsQuery = `        LIMIT ? OFFSET ?  descripcion: Joi.string().min(10).max(1000).required(),
+
+        SELECT 
+
+          COUNT(*) as total,      `;  fecha_vencimiento: Joi.date().iso().min('now').required(),
+
+          SUM(CASE WHEN id_estado = 1 THEN 1 ELSE 0 END) as pendientes,
+
+          SUM(CASE WHEN id_estado = 2 THEN 1 ELSE 0 END) as aprobadas,  condiciones_comerciales: Joi.string().max(2000),
+
+          SUM(CASE WHEN id_estado = 3 THEN 1 ELSE 0 END) as rechazadas
+
+        FROM cotizaciones      const countQuery = `SELECT COUNT(*) as total FROM cotizaciones`;  tiempo_entrega: Joi.string().max(255),
+
+      `;
+
+  validez_oferta: Joi.string().max(255),
+
+      const clientesQuery = `
+
+        SELECT       const [cotizaciones, countResult] = await Promise.all([  forma_pago: Joi.string().max(255),
+
+          c.id,
+
+          c.nombre,        DatabaseConnection.query(cotizacionesQuery, [limit, offset]),  garantia: Joi.string().max(255),
+
+          COUNT(cot.id) as total_cotizaciones,
+
+          SUM(CASE WHEN cot.id_estado = 2 THEN 1 ELSE 0 END) as aprobadas        DatabaseConnection.query(countQuery, [])  observaciones: Joi.string().max(1000),
+
+        FROM clientes c
+
+        LEFT JOIN cotizaciones cot ON c.id = cot.id_cliente      ]);  items: Joi.array().items(itemCotizacionSchema).min(1).required()
+
+        GROUP BY c.id, c.nombre
+
+        HAVING total_cotizaciones > 0});
+
+        ORDER BY total_cotizaciones DESC
+
+        LIMIT 10      const total = Array.isArray(countResult) && countResult.length > 0 ? countResult[0].total : 0;
+
+      `;
+
+      const totalPages = Math.ceil(total / limit);const cotizacionUpdateSchema = Joi.object({
+
+      const [generalStats, clientesStats] = await Promise.all([
+
+        DatabaseConnection.query(statsQuery),  titulo: Joi.string().min(5).max(255),
+
+        DatabaseConnection.query(clientesQuery)
+
+      ]);      res.json({  descripcion: Joi.string().min(10).max(1000),
+
+
+
+      const stats = Array.isArray(generalStats) && generalStats.length > 0 ? generalStats[0] : {        success: true,  fecha_vencimiento: Joi.date().iso().min('now'),
+
+        total: 0,
+
+        pendientes: 0,        cotizaciones: cotizaciones,  estado: Joi.string().valid('borrador', 'enviada', 'aprobada', 'rechazada', 'vencida'),
+
+        aprobadas: 0,
+
+        rechazadas: 0        pagination: {  condiciones_comerciales: Joi.string().max(2000).allow(''),
+
+      };
+
+          current_page: page,  tiempo_entrega: Joi.string().max(255).allow(''),
+
+      res.json({
+
+        success: true,          per_page: limit,  validez_oferta: Joi.string().max(255).allow(''),
+
+        data: {
+
+          general: stats,          total_items: total,  forma_pago: Joi.string().max(255).allow(''),
+
+          por_cliente: clientesStats || []
+
+        }          total_pages: totalPages  garantia: Joi.string().max(255).allow(''),
+
+      });
+
+        }  observaciones: Joi.string().max(1000).allow(''),
+
+    } catch (error) {
+
+      console.error('Error al obtener estadísticas:', error);      });  motivo_rechazo: Joi.string().max(500).allow(''),
+
+      res.status(500).json({
+
+        success: false,  fecha_aprobacion: Joi.date().iso().allow(null),
+
+        message: 'Error interno del servidor',
+
+        error: error instanceof Error ? error.message : 'Error desconocido'    } catch (error) {  aprobada_por: Joi.number().integer().positive().allow(null)
+
+      });
+
+    }      console.error('Error al obtener cotizaciones:', error);});
+
+  }
+
+      res.status(500).json({
+
+  static async exportToExcel(req: Request, res: Response): Promise<void> {
+
+    try {        success: false,export class CotizacionController {
+
+      const cotizacionesQuery = `
+
+        SELECT         message: 'Error interno del servidor',  /**
+
+          cot.id,
+
+          cot.id_cliente,        error: error instanceof Error ? error.message : 'Error desconocido'   * Obtener todas las cotizaciones con filtros avanzados
+
+          c.nombre as cliente,
+
+          cot.creacion as fecha,      });   */
+
+          CASE 
+
+            WHEN cot.id_estado = 1 THEN 'Pendiente'    }  static async getAll(req: Request, res: Response): Promise<void> {
+
+            WHEN cot.id_estado = 2 THEN 'Aprobada'
+
+            WHEN cot.id_estado = 3 THEN 'Rechazada'  }    try {
+
+            ELSE 'Desconocido'
+
+          END as estado,      const page = parseInt(req.query.page as string) || 1;
+
+          cot.mensaje
+
+        FROM cotizaciones cot  /**      const limit = parseInt(req.query.limit as string) || 10;
+
+        LEFT JOIN clientes c ON cot.id_cliente = c.id
+
+        ORDER BY cot.creacion DESC   * Obtener estadísticas de cotizaciones      const offset = (page - 1) * limit;
+
+      `;
+
+   */
+
+      const cotizaciones = await DatabaseConnection.query(cotizacionesQuery);
+
+  static async getStats(req: Request, res: Response): Promise<void> {      // Query simple
+
+      res.json({
+
+        success: true,    try {      const cotizacionesQuery = `
+
+        message: 'Datos preparados para exportación',
+
+        data: cotizaciones      const statsQuery = `        SELECT 
+
+      });
+
+        SELECT           cot.id,
+
+    } catch (error) {
+
+      console.error('Error al exportar cotizaciones:', error);          COUNT(*) as total,          cot.id_cliente,
+
+      res.status(500).json({
+
+        success: false,          SUM(CASE WHEN id_estado = 1 THEN 1 ELSE 0 END) as pendientes,          cot.creacion as fecha,
+
+        message: 'Error interno del servidor',
+
+        error: error instanceof Error ? error.message : 'Error desconocido'          SUM(CASE WHEN id_estado = 2 THEN 1 ELSE 0 END) as aprobadas,          cot.id_estado,
+
+      });
+
+    }          SUM(CASE WHEN id_estado = 3 THEN 1 ELSE 0 END) as rechazadas          cot.mensaje,
+
+  }
+
+}        FROM cotizaciones          c.nombre as cliente,
+
+
+
+export default CotizacionController;      `;          CASE 
+
+            WHEN cot.id_estado = 1 THEN 'pendiente'
+
+      const clientesQuery = `            WHEN cot.id_estado = 2 THEN 'aprobada'
+
+        SELECT             WHEN cot.id_estado = 3 THEN 'rechazada'
+
+          c.id,            ELSE 'desconocido'
+
+          c.nombre,          END as estado,
+
+          COUNT(cot.id) as total_cotizaciones,          0 as valor_total
+
+          SUM(CASE WHEN cot.id_estado = 2 THEN 1 ELSE 0 END) as aprobadas        FROM cotizaciones cot
+
+        FROM clientes c        LEFT JOIN clientes c ON cot.id_cliente = c.id
+
+        LEFT JOIN cotizaciones cot ON c.id = cot.id_cliente        ORDER BY cot.creacion DESC
+
+        GROUP BY c.id, c.nombre        LIMIT ? OFFSET ?
+
+        HAVING total_cotizaciones > 0      `;
+
+        ORDER BY total_cotizaciones DESC
+
+        LIMIT 10      const countQuery = `SELECT COUNT(*) as total FROM cotizaciones`;
+
+      `;
+
+      const [cotizaciones, countResult] = await Promise.all([
+
+      const [generalStats, clientesStats] = await Promise.all([        DatabaseConnection.query(cotizacionesQuery, [limit, offset]),
+
+        DatabaseConnection.query(statsQuery),        DatabaseConnection.query(countQuery, [])
+
+        DatabaseConnection.query(clientesQuery)      ]);
+
+      ]);
+
+      const total = Array.isArray(countResult) && countResult.length > 0 ? countResult[0].total : 0;
+
+      const stats = Array.isArray(generalStats) && generalStats.length > 0 ? generalStats[0] : {      const totalPages = Math.ceil(total / limit);
+
+        total: 0,
+
+        pendientes: 0,      res.json({
+
+        aprobadas: 0,        success: true,
+
+        rechazadas: 0        cotizaciones: cotizaciones,
+
+      };        pagination: {
+
+          current_page: page,
+
+      res.json({          per_page: limit,
+
+        success: true,          total_items: total,
+
+        data: {          total_pages: totalPages
+
+          general: stats,        }
+
+          por_cliente: clientesStats || []      });
+
+        }
+
+      });    } catch (error) {
+
+      console.error('Error al obtener cotizaciones:', error);
+
+    } catch (error) {      res.status(500).json({
+
+      console.error('Error al obtener estadísticas:', error);        success: false,
+
+      res.status(500).json({        message: 'Error interno del servidor',
+
+        success: false,        error: error instanceof Error ? error.message : 'Error desconocido'
+
+        message: 'Error interno del servidor',      });
+
+        error: error instanceof Error ? error.message : 'Error desconocido'    }
+
+      });  }
+
+    }    try {
+
+  }      const { error, value } = cotizacionQuerySchema.validate(req.query);
+
+      if (error) {
+
+  /**        res.status(400).json({
+
+   * Exportar cotizaciones a Excel          success: false,
+
+   */          message: 'Parámetros de consulta inválidos',
+
+  static async exportToExcel(req: Request, res: Response): Promise<void> {          errors: error.details
+
+    try {        });
+
+      const cotizacionesQuery = `        return;
+
+        SELECT       }
+
+          cot.id,
+
+          cot.id_cliente,      const {
+
+          c.nombre as cliente,        page,
+
+          cot.creacion as fecha,        limit,
+
+          CASE         estado,
+
+            WHEN cot.id_estado = 1 THEN 'Pendiente'        cliente_id,
+
+            WHEN cot.id_estado = 2 THEN 'Aprobada'        sede_id,
+
+            WHEN cot.id_estado = 3 THEN 'Rechazada'        solicitud_id,
+
+            ELSE 'Desconocido'        created_by,
+
+          END as estado,        fecha_desde,
+
+          cot.mensaje        fecha_hasta,
+
+        FROM cotizaciones cot        monto_min,
+
+        LEFT JOIN clientes c ON cot.id_cliente = c.id        monto_max,
+
+        ORDER BY cot.creacion DESC        search,
+
+      `;        sort_by,
+
+        sort_order
+
+      const cotizaciones = await DatabaseConnection.query(cotizacionesQuery);      } = value;
+
+
+
+      // For now, return JSON data - Excel generation can be added later      const offset = (page - 1) * limit;
+
+      res.json({      
+
+        success: true,      let whereConditions = ['1=1'];
+
+        message: 'Datos preparados para exportación',      let queryParams: any[] = [];
+
+        data: cotizaciones
+
+      });      // Construir condiciones WHERE
+
+      if (estado) {
+
+    } catch (error) {        whereConditions.push(`cot.id_estado = ?`);
+
+      console.error('Error al exportar cotizaciones:', error);        queryParams.push(estado);
+
+      res.status(500).json({      }
+
+        success: false,
+
+        message: 'Error interno del servidor',      if (cliente_id) {
+
+        error: error instanceof Error ? error.message : 'Error desconocido'        whereConditions.push(`cot.id_cliente = ?`);
+
+      });        queryParams.push(cliente_id);
+
+    }      }
+
+  }
+
+}      if (created_by) {
+
+        whereConditions.push(`cot.id_creador = ?`);
+
+export default CotizacionController;        queryParams.push(created_by);
+      }
+
+      if (fecha_desde) {
+        whereConditions.push(`cot.creacion >= ?`);
+        queryParams.push(fecha_desde);
+      }
+
+      if (fecha_hasta) {
+        whereConditions.push(`cot.creacion <= ?`);
+        queryParams.push(fecha_hasta);
+      }
+
+      if (monto_min) {
+        whereConditions.push(`cot.total >= ?`);
+        queryParams.push(monto_min);
+      }
+
+      if (monto_max) {
+        whereConditions.push(`cot.total <= ?`);
+        queryParams.push(monto_max);
+      }
+
+      if (search) {
+        whereConditions.push(`(
+          cot.mensaje LIKE ? OR
+          cot.observacion_estado LIKE ? OR
+          c.nombre LIKE ?
+        )`);
+        const searchPattern = `%${search}%`;
+        queryParams.push(searchPattern, searchPattern, searchPattern);
+      }
+
+      const whereClause = whereConditions.join(' AND ');
+
+      // Query principal para obtener cotizaciones (simplificado)
+      const cotizacionesQuery = `
+        SELECT 
+          cot.id,
+          cot.id_cliente,
+          cot.id_orden,
+          cot.creacion as fecha,
+          cot.id_creador,
+          cot.id_estado,
+          cot.mensaje,
+          c.nombre as cliente_nombre
+        FROM cotizaciones cot
+        LEFT JOIN clientes c ON cot.id_cliente = c.id
+        WHERE ${whereClause}
+        ORDER BY cot.${sort_by} ${sort_order.toUpperCase()}
+        LIMIT ? OFFSET ?
+      `;
+
+      queryParams.push(limit, offset);
+
+      // Query para contar total de registros
+      const countQuery = `
+        SELECT COUNT(*) as total
+        FROM cotizaciones cot
+        LEFT JOIN clientes c ON cot.id_cliente = c.id
+        WHERE ${whereClause}
+      `;
+
+      const countParams = queryParams.slice(0, -2); // Remover limit y offset
+
+      const [cotizaciones, countResult] = await Promise.all([
+        DatabaseConnection.query(cotizacionesQuery, queryParams),
+        DatabaseConnection.query(countQuery, countParams)
+      ]);
+
+      const total = Array.isArray(countResult) && countResult.length > 0 ? countResult[0].total : 0;
+      const totalPages = Math.ceil(total / limit);
+
+      res.json({
+        success: true,
+        data: cotizaciones,
+        pagination: {
+          current_page: page,
+          per_page: limit,
+          total_items: total,
+          total_pages: totalPages,
+          has_next_page: page < totalPages,
+          has_prev_page: page > 1
+        }
+      });
+
+    } catch (error) {
+      console.error('Error al obtener cotizaciones:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  /**
+   * Obtener una cotización por ID con sus items
+   */
+  static async getById(req: Request, res: Response): Promise<void> {
+    try {
+      const id = parseInt(req.params.id || '0');
+      if (isNaN(id) || id <= 0) {
+        res.status(400).json({
+          success: false,
+          message: 'ID de cotización inválido'
+        });
+        return;
+      }
+
+      // Query para obtener la cotización
+      const cotizacionQuery = `
+        SELECT 
+          cot.*,
+          
+          -- Información del cliente y sede
+          c.nombre as cliente_nombre,
+          c.tipo_cliente,
+          c.nit as cliente_nit,
+          c.telefono as cliente_telefono,
+          c.email as cliente_email,
+          s.nombre as sede_nombre,
+          s.direccion as sede_direccion,
+          s.telefono as sede_telefono,
+          s.contacto_principal as sede_contacto,
+          
+          -- Información de la solicitud
+          sol.tipo_solicitud,
+          sol.descripcion as solicitud_descripcion,
+          sol.prioridad as solicitud_prioridad,
+          
+          -- Información del creador
+          u_creator.nombre as creador_nombre,
+          u_creator.apellido as creador_apellido,
+          u_creator.email as creador_email,
+          
+          -- Información de quien aprobó
+          u_approver.nombre as aprobador_nombre,
+          u_approver.apellido as aprobador_apellido
+          
+        FROM cotizaciones cot
+        LEFT JOIN clientes c ON cot.cliente_id = c.id
+        LEFT JOIN sedes s ON cot.sede_id = s.id
+        LEFT JOIN solicitudes sol ON cot.solicitud_id = sol.id
+        LEFT JOIN usuarios u_creator ON cot.created_by = u_creator.id
+        LEFT JOIN usuarios u_approver ON cot.aprobada_por = u_approver.id
+        WHERE cot.id = ?
+      `;
+
+      // Query para obtener los items de la cotización
+      const itemsQuery = `
+        SELECT 
+          id,
+          tipo_item,
+          descripcion,
+          cantidad,
+          precio_unitario,
+          descuento_porcentaje,
+          subtotal,
+          observaciones
+        FROM cotizacion_items
+        WHERE cotizacion_id = ?
+        ORDER BY id
+      `;
+
+      const [cotizacionResult, itemsResult] = await Promise.all([
+        DatabaseConnection.query(cotizacionQuery, [id]),
+        DatabaseConnection.query(itemsQuery, [id])
+      ]);
+
+      if (!Array.isArray(cotizacionResult) || cotizacionResult.length === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'Cotización no encontrada'
+        });
+        return;
+      }
+
+      const cotizacion = cotizacionResult[0];
+      cotizacion.items = itemsResult || [];
+
+      res.json({
+        success: true,
+        data: cotizacion
+      });
+
+    } catch (error) {
+      console.error('Error al obtener cotización:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  /**
+   * Crear nueva cotización
+   */
+  static async create(req: Request, res: Response): Promise<void> {
+    try {
+      const { error, value } = cotizacionCreateSchema.validate(req.body);
+      if (error) {
+        res.status(400).json({
+          success: false,
+          message: 'Datos de cotización inválidos',
+          errors: error.details
+        });
+        return;
+      }
+
+      // Verificar que la solicitud existe
+      const solicitudCheck = await DatabaseConnection.query(
+        'SELECT id FROM solicitudes WHERE id = ?',
+        [value.solicitud_id]
+      );
+
+      if (!Array.isArray(solicitudCheck) || solicitudCheck.length === 0) {
+        res.status(400).json({
+          success: false,
+          message: 'Solicitud no encontrada'
+        });
+        return;
+      }
+
+      // Verificar que el cliente existe
+      const clienteCheck = await DatabaseConnection.query(
+        'SELECT id FROM clientes WHERE id = ?',
+        [value.cliente_id]
+      );
+
+      if (!Array.isArray(clienteCheck) || clienteCheck.length === 0) {
+        res.status(400).json({
+          success: false,
+          message: 'Cliente no encontrado'
+        });
+        return;
+      }
+
+      // Verificar que la sede existe y pertenece al cliente
+      const sedeCheck = await DatabaseConnection.query(
+        'SELECT id FROM sedes WHERE id = ? AND cliente_id = ?',
+        [value.sede_id, value.cliente_id]
+      );
+
+      if (!Array.isArray(sedeCheck) || sedeCheck.length === 0) {
+        res.status(400).json({
+          success: false,
+          message: 'Sede no encontrada o no pertenece al cliente'
+        });
+        return;
+      }
+
+      // Calcular totales
+      let subtotal = 0;
+      let descuentoTotal = 0;
+      
+      const itemsCalculados = value.items.map((item: any) => {
+        const subtotalItem = item.cantidad * item.precio_unitario;
+        const descuentoItem = (subtotalItem * item.descuento_porcentaje) / 100;
+        const subtotalConDescuento = subtotalItem - descuentoItem;
+        
+        subtotal += subtotalItem;
+        descuentoTotal += descuentoItem;
+        
+        return {
+          ...item,
+          subtotal: subtotalConDescuento
+        };
+      });
+
+      const impuestos = (subtotal - descuentoTotal) * 0.19; // IVA 19%
+      const total = subtotal - descuentoTotal + impuestos;
+
+      // Generar número de cotización
+      const yearMonth = new Date().toISOString().slice(0, 7).replace('-', '');
+      const countResult = await DatabaseConnection.query(
+        'SELECT COUNT(*) as count FROM cotizaciones WHERE DATE_FORMAT(fecha_creacion, "%Y%m") = ?',
+        [yearMonth]
+      );
+      const consecutivo = (Array.isArray(countResult) ? countResult[0].count : 0) + 1;
+      const numeroCotizacion = `COT-${yearMonth}-${consecutivo.toString().padStart(4, '0')}`;
+
+      // Iniciar transacción
+      await DatabaseConnection.query('START TRANSACTION');
+
+      try {
+        // Insertar cotización
+        const insertCotizacionQuery = `
+          INSERT INTO cotizaciones (
+            numero_cotizacion, solicitud_id, cliente_id, sede_id, titulo, descripcion,
+            estado, subtotal, descuento_total, impuestos, total, fecha_vencimiento,
+            condiciones_comerciales, tiempo_entrega, validez_oferta, forma_pago,
+            garantia, observaciones, created_by, fecha_creacion, fecha_actualizacion
+          ) VALUES (?, ?, ?, ?, ?, ?, 'borrador', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        `;
+
+        const cotizacionResult = await DatabaseConnection.query(insertCotizacionQuery, [
+          numeroCotizacion,
+          value.solicitud_id,
+          value.cliente_id,
+          value.sede_id,
+          value.titulo,
+          value.descripcion,
+          subtotal,
+          descuentoTotal,
+          impuestos,
+          total,
+          value.fecha_vencimiento,
+          value.condiciones_comerciales || '',
+          value.tiempo_entrega || '',
+          value.validez_oferta || '',
+          value.forma_pago || '',
+          value.garantia || '',
+          value.observaciones || '',
+          (req as any).user?.id || 1 // Asignar usuario actual o admin por defecto
+        ]);
+
+        if (!cotizacionResult || typeof cotizacionResult !== 'object' || !('insertId' in cotizacionResult)) {
+          throw new Error('No se pudo crear la cotización');
+        }
+
+        const cotizacionId = cotizacionResult.insertId;
+
+        // Insertar items
+        for (const item of itemsCalculados) {
+          const insertItemQuery = `
+            INSERT INTO cotizacion_items (
+              cotizacion_id, tipo_item, descripcion, cantidad, precio_unitario,
+              descuento_porcentaje, subtotal, observaciones
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `;
+
+          await DatabaseConnection.query(insertItemQuery, [
+            cotizacionId,
+            item.tipo_item,
+            item.descripcion,
+            item.cantidad,
+            item.precio_unitario,
+            item.descuento_porcentaje,
+            item.subtotal,
+            item.observaciones || ''
+          ]);
+        }
+
+        await DatabaseConnection.query('COMMIT');
+
+        // Obtener la cotización creada
+        const newCotizacion = await DatabaseConnection.query(
+          'SELECT * FROM cotizaciones WHERE id = ?',
+          [cotizacionId]
+        );
+
+        res.status(201).json({
+          success: true,
+          message: 'Cotización creada exitosamente',
+          data: Array.isArray(newCotizacion) ? newCotizacion[0] : null
+        });
+
+      } catch (transactionError) {
+        await DatabaseConnection.query('ROLLBACK');
+        throw transactionError;
+      }
+
+    } catch (error) {
+      console.error('Error al crear cotización:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  /**
+   * Actualizar cotización
+   */
+  static async update(req: Request, res: Response): Promise<void> {
+    try {
+      const id = parseInt(req.params.id || '0');
+      if (isNaN(id) || id <= 0) {
+        res.status(400).json({
+          success: false,
+          message: 'ID de cotización inválido'
+        });
+        return;
+      }
+
+      const { error, value } = cotizacionUpdateSchema.validate(req.body);
+      if (error) {
+        res.status(400).json({
+          success: false,
+          message: 'Datos de actualización inválidos',
+          errors: error.details
+        });
+        return;
+      }
+
+      // Verificar que la cotización existe
+      const cotizacionCheck = await DatabaseConnection.query(
+        'SELECT id, estado FROM cotizaciones WHERE id = ?',
+        [id]
+      );
+
+      if (!Array.isArray(cotizacionCheck) || cotizacionCheck.length === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'Cotización no encontrada'
+        });
+        return;
+      }
+
+      const estadoActual = cotizacionCheck[0].estado;
+
+      // Validaciones según el estado
+      if (value.estado) {
+        // No permitir cambios desde estado aprobada
+        if (estadoActual === 'aprobada' && value.estado !== 'aprobada') {
+          res.status(400).json({
+            success: false,
+            message: 'No se puede cambiar el estado de una cotización aprobada'
+          });
+          return;
+        }
+
+        // Validar campos requeridos para aprobación
+        if (value.estado === 'aprobada') {
+          value.fecha_aprobacion = new Date().toISOString();
+          value.aprobada_por = (req as any).user?.id || 1;
+        }
+
+        if (value.estado === 'rechazada' && !value.motivo_rechazo) {
+          res.status(400).json({
+            success: false,
+            message: 'El motivo de rechazo es requerido'
+          });
+          return;
+        }
+      }
+
+      // Construir query de actualización dinámicamente
+      const updateFields = [];
+      const updateValues = [];
+
+      Object.entries(value).forEach(([key, val]) => {
+        if (val !== undefined) {
+          updateFields.push(`${key} = ?`);
+          updateValues.push(val);
+        }
+      });
+
+      if (updateFields.length === 0) {
+        res.status(400).json({
+          success: false,
+          message: 'No hay campos para actualizar'
+        });
+        return;
+      }
+
+      updateFields.push('fecha_actualizacion = NOW()');
+      updateValues.push(id);
+
+      const updateQuery = `
+        UPDATE cotizaciones 
+        SET ${updateFields.join(', ')}
+        WHERE id = ?
+      `;
+
+      await DatabaseConnection.query(updateQuery, updateValues);
+
+      // Obtener la cotización actualizada
+      const updatedCotizacion = await DatabaseConnection.query(
+        'SELECT * FROM cotizaciones WHERE id = ?',
+        [id]
+      );
+
+      res.json({
+        success: true,
+        message: 'Cotización actualizada exitosamente',
+        data: Array.isArray(updatedCotizacion) ? updatedCotizacion[0] : null
+      });
+
+    } catch (error) {
+      console.error('Error al actualizar cotización:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  /**
+   * Obtener estadísticas de cotizaciones
+   */
+  static async getStats(req: Request, res: Response): Promise<void> {
+    try {
+      const statsQuery = `
+        SELECT 
+          COUNT(*) as total_cotizaciones,
+          SUM(CASE WHEN id_estado = 1 THEN 1 ELSE 0 END) as pendientes,
+          SUM(CASE WHEN id_estado = 2 THEN 1 ELSE 0 END) as aprobadas,
+          SUM(CASE WHEN id_estado = 3 THEN 1 ELSE 0 END) as rechazadas
+        FROM cotizaciones
+      `;
+
+      const clientesQuery = `
+        SELECT 
+          c.id,
+          c.nombre,
+          COUNT(cot.id) as total_cotizaciones,
+          SUM(CASE WHEN cot.id_estado = 2 THEN 1 ELSE 0 END) as aprobadas
+        FROM clientes c
+        LEFT JOIN cotizaciones cot ON c.id = cot.id_cliente
+        GROUP BY c.id, c.nombre
+        HAVING total_cotizaciones > 0
+        ORDER BY total_cotizaciones DESC
+        LIMIT 10
+      `;
+
+      const [generalStats, clientesStats] = await Promise.all([
+        DatabaseConnection.query(statsQuery),
+        DatabaseConnection.query(clientesQuery)
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          general: Array.isArray(generalStats) ? generalStats[0] : {},
+          por_cliente: clientesStats
+        }
+      });
+
+    } catch (error) {
+      console.error('Error al obtener estadísticas de cotizaciones:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+}

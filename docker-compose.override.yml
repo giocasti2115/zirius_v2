@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  backend:
+    command: ["dumb-init", "--", "npx", "ts-node", "src/index.ts"]
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./backend/src:/app/src:ro
+
+  frontend:
+    build:
+      context: ./frontend
+      target: deps
+    command: ["npm", "run", "dev"]
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./frontend:/app:delegated
+      - /app/node_modules
+      - /app/.next

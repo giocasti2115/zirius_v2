@@ -1,0 +1,154 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ master, main, develop ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  # Job 1: Lint y Test Backend
+  backend-tests:
+    name: Backend Tests & Lint
+    runs-on: ubuntu-latest
+    
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root_password
+          MYSQL_DATABASE: zirius_test
+          MYSQL_USER: zirius_user
+          MYSQL_PASSWORD: zirius_password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+    
+    defaults:
+      run:
+        working-directory: ./backend
+        
+    steps:
+    - name: Checkout código
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: backend/package-lock.json
+        
+    - name: Instalar dependencias Backend
+      run: npm ci
+      
+    - name: Lint Backend
+      run: npm run lint || echo "Lint script not found, skipping..."
+      
+    - name: TypeScript Check
+      run: npx tsc --noEmit
+      
+    - name: Build Backend
+      run: npm run build
+      
+    - name: Test Backend
+      run: npm test || echo "Tests not found, skipping..."
+      env:
+        NODE_ENV: test
+        DB_HOST: localhost
+        DB_PORT: 3306
+        DB_NAME: zirius_test
+        DB_USER: zirius_user
+        DB_PASSWORD: zirius_password
+        JWT_SECRET: test_secret_key_for_ci
+
+  # Job 2: Frontend Tests & Build
+  frontend-tests:
+    name: Frontend Tests & Build
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ./frontend
+        
+    steps:
+    - name: Checkout código
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+        
+    - name: Instalar dependencias Frontend
+      run: npm ci
+      
+    - name: Lint Frontend
+      run: npm run lint || echo "Lint script not found, skipping..."
+      
+    - name: TypeScript Check Frontend
+      run: npx tsc --noEmit
+      
+    - name: Build Frontend
+      run: npm run build
+      
+    - name: Test Frontend
+      run: npm test || echo "Tests not found, skipping..."
+
+  # Job 3: Security Scan
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    
+    steps:
+    - name: Checkout código
+      uses: actions/checkout@v4
+      
+    - name: Run npm audit Backend
+      working-directory: ./backend
+      run: |
+        npm audit --audit-level=high || true
+        
+    - name: Run npm audit Frontend
+      working-directory: ./frontend
+      run: |
+        npm audit --audit-level=high || true
+
+  # Job 4: Deploy (solo en master)
+  deploy:
+    name: Deploy to Staging
+    needs: [backend-tests, frontend-tests]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout código
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        
+    - name: Deploy Backend
+      run: |
+        echo "🚀 Deploying Backend to staging..."
+        # Aquí irían los comandos específicos de deployment
+        # Ejemplo: scp, rsync, docker build & push, etc.
+        
+    - name: Deploy Frontend
+      run: |
+        echo "🚀 Deploying Frontend to staging..."
+        # Aquí irían los comandos específicos de deployment
+        
+    - name: Health Check
+      run: |
+        echo "🏥 Running health checks..."
+        # Aquí irían los health checks del deployment

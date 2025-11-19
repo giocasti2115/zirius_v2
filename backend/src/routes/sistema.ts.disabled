@@ -1,0 +1,155 @@
+import { Router } from 'express';
+import { SistemaController } from '../controllers/SistemaController';
+import { authMiddleware } from '../middleware/auth';
+import { validateRequest } from '../middleware/validation';
+import { body, query, param } from 'express-validator';
+import { 
+  validateGeneralesPermissions,
+  sanitizeGeneralesInput,
+  validateRateLimit,
+  validateDataIntegrity,
+  auditGeneralesChanges 
+} from '../middleware/generalesValidation';
+import {
+  configuracionRespaldoValidation,
+  plantillaNotificacionValidation,
+  commonValidation
+} from '../validations/generalesValidations';
+import { handleValidationErrors } from '../middleware/errorHandler';
+
+const router = Router();
+const sistemaController = new SistemaController();
+
+// Aplicar middlewares globales a todas las rutas
+router.use(sanitizeGeneralesInput);
+router.use(auditGeneralesChanges);
+
+// ====================== RESPALDOS ======================
+
+router.get('/respaldos/configuraciones',
+  authMiddleware,
+  [
+    query('activo').optional().isIn(['true', 'false']).withMessage('activo debe ser true o false')
+  ],
+  validateRequest,
+  sistemaController.getConfiguracionesRespaldo.bind(sistemaController)
+);
+
+router.post('/respaldos/configuraciones',
+  authMiddleware,
+  [
+    body('nombre').notEmpty().withMessage('El nombre es obligatorio'),
+    body('frecuencia').isIn(['diario', 'semanal', 'mensual']).withMessage('Frecuencia inválida'),
+    body('hora_ejecucion').matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/).withMessage('Formato de hora inválido (HH:mm)'),
+    body('descripcion').optional().isString().trim(),
+    body('dias_semana').optional().isArray(),
+    body('dia_mes').optional().isInt({ min: 1, max: 31 }).withMessage('Día del mes debe estar entre 1 y 31'),
+    body('retener_dias').optional().isInt({ min: 1 }).withMessage('Días de retención debe ser mayor a 0'),
+    body('compresion').optional().isBoolean(),
+    body('tablas_incluir').optional().isIn(['todas', 'seleccionadas']),
+    body('tablas_seleccionadas').optional().isArray()
+  ],
+  validateRequest,
+  sistemaController.createConfiguracionRespaldo.bind(sistemaController)
+);
+
+router.get('/respaldos',
+  authMiddleware,
+  [
+    query('page').optional().isInt({ min: 1 }).withMessage('La página debe ser un número entero mayor a 0'),
+    query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('El límite debe estar entre 1 y 100'),
+    query('tipo').optional().isIn(['automatico', 'manual']).withMessage('Tipo de respaldo inválido'),
+    query('estado').optional().isIn(['completado', 'en_progreso', 'error', 'cancelado']).withMessage('Estado inválido')
+  ],
+  validateRequest,
+  sistemaController.getRespaldos.bind(sistemaController)
+);
+
+router.post('/respaldos/manual',
+  authMiddleware,
+  [
+    body('nombre').notEmpty().withMessage('El nombre es obligatorio'),
+    body('descripcion').optional().isString().trim(),
+    body('tablas_incluir').optional().isIn(['todas', 'seleccionadas']),
+    body('tablas_seleccionadas').optional().isArray(),
+    body('compresion').optional().isBoolean()
+  ],
+  validateRequest,
+  sistemaController.createRespaldoManual.bind(sistemaController)
+);
+
+// ====================== LOGS ======================
+
+router.get('/logs',
+  authMiddleware,
+  [
+    query('page').optional().isInt({ min: 1 }).withMessage('La página debe ser un número entero mayor a 0'),
+    query('limit').optional().isInt({ min: 1, max: 200 }).withMessage('El límite debe estar entre 1 y 200'),
+    query('nivel').optional().isIn(['info', 'warning', 'error', 'debug', 'success']).withMessage('Nivel inválido'),
+    query('modulo').optional().isString().trim(),
+    query('usuario').optional().isString().trim(),
+    query('fecha_inicio').optional().isISO8601().withMessage('Formato de fecha inválido'),
+    query('fecha_fin').optional().isISO8601().withMessage('Formato de fecha inválido')
+  ],
+  validateRequest,
+  sistemaController.getLogs.bind(sistemaController)
+);
+
+router.get('/logs/stats',
+  authMiddleware,
+  sistemaController.getLogStats.bind(sistemaController)
+);
+
+// ====================== NOTIFICACIONES ======================
+
+router.get('/notificaciones/plantillas',
+  authMiddleware,
+  [
+    query('tipo').optional().isIn(['email', 'sms', 'push', 'sistema']).withMessage('Tipo inválido'),
+    query('evento').optional().isString().trim(),
+    query('activa').optional().isIn(['true', 'false']).withMessage('activa debe ser true o false')
+  ],
+  validateRequest,
+  sistemaController.getPlantillasNotificacion.bind(sistemaController)
+);
+
+router.post('/notificaciones/plantillas',
+  authMiddleware,
+  [
+    body('nombre').notEmpty().withMessage('El nombre es obligatorio'),
+    body('tipo').isIn(['email', 'sms', 'push', 'sistema']).withMessage('Tipo inválido'),
+    body('evento').notEmpty().withMessage('El evento es obligatorio'),
+    body('contenido').notEmpty().withMessage('El contenido es obligatorio'),
+    body('asunto').optional().isString().trim(),
+    body('variables_disponibles').optional().isArray()
+  ],
+  validateRequest,
+  sistemaController.createPlantillaNotificacion.bind(sistemaController)
+);
+
+router.get('/notificaciones/configuraciones',
+  authMiddleware,
+  [
+    query('usuario_id').optional().isInt({ min: 1 }),
+    query('evento').optional().isString().trim(),
+    query('activo').optional().isIn(['true', 'false'])
+  ],
+  validateRequest,
+  sistemaController.getConfiguracionesNotificacion.bind(sistemaController)
+);
+
+router.get('/notificaciones/historial',
+  authMiddleware,
+  [
+    query('page').optional().isInt({ min: 1 }),
+    query('limit').optional().isInt({ min: 1, max: 100 }),
+    query('canal').optional().isIn(['email', 'sms', 'push', 'sistema']),
+    query('estado').optional().isIn(['enviado', 'pendiente', 'error', 'leido']),
+    query('fecha_inicio').optional().isISO8601(),
+    query('fecha_fin').optional().isISO8601()
+  ],
+  validateRequest,
+  sistemaController.getHistorialNotificaciones.bind(sistemaController)
+);
+
+export default router;

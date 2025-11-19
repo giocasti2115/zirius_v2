@@ -1,0 +1,423 @@
+import { Router } from 'express';
+import db from '../../config/database';
+import { Request, Response } from 'express';
+
+const router = Router();
+
+// Interfaz para la respuesta de solicitudes
+interface SolicitudReal {
+  id: number;
+  aviso: string;
+  creacion: string;
+  id_estado: number;
+  estado?: string;
+  id_equipo?: number;
+  id_servicio?: number;
+  id_creador?: number;
+  creador_nombre?: string;
+  observacion?: string;
+  observacion_estado?: string;
+  cambio_estado?: string;
+  id_cambiador?: number;
+  cambiador_nombre?: string;
+}
+
+// Obtener lista de solicitudes reales
+router.get('/', async (req: Request, res: Response) => {
+  try {
+    console.log('🔍 [Solicitudes] Obteniendo solicitudes reales de la BD');
+    
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const offset = (page - 1) * limit;
+
+    // Construir condiciones WHERE
+    const whereConditions: string[] = [];
+    const queryParams: any[] = [];
+
+    // Filtro por estado
+    if (req.query.estado) {
+      const estados = Array.isArray(req.query.estado) 
+        ? req.query.estado.map(e => parseInt(e as string))
+        : [parseInt(req.query.estado as string)];
+      
+      whereConditions.push(`s.id_estado IN (${estados.map(() => '?').join(',')})`);
+      queryParams.push(...estados);
+    }
+
+    // Filtro por aviso
+    if (req.query.aviso) {
+      whereConditions.push('s.aviso LIKE ?');
+      queryParams.push(`%${req.query.aviso}%`);
+    }
+
+    // Filtro por rango de fechas
+    if (req.query.fecha_desde) {
+      whereConditions.push('DATE(s.creacion) >= ?');
+      queryParams.push(req.query.fecha_desde);
+    }
+
+    if (req.query.fecha_hasta) {
+      whereConditions.push('DATE(s.creacion) <= ?');
+      queryParams.push(req.query.fecha_hasta);
+    }
+
+    // Construir WHERE clause
+    const whereClause = whereConditions.length > 0 
+      ? 'WHERE ' + whereConditions.join(' AND ')
+      : '';
+
+    // Query principal con JOIN para obtener el estado
+    const solicitudesQuery = `
+      SELECT 
+        s.id,
+        s.aviso,
+        s.creacion,
+        s.id_estado,
+        se.estado,
+        s.id_equipo,
+        s.id_servicio,
+        s.id_creador,
+        s.observacion,
+        s.observacion_estado,
+        s.cambio_estado,
+        s.id_cambiador,
+        uc.nombre as creador_nombre,
+        uca.nombre as cambiador_nombre
+      FROM solicitudes s
+      LEFT JOIN solicitudes_estados se ON s.id_estado = se.id
+      LEFT JOIN usuarios uc ON s.id_creador = uc.id
+      LEFT JOIN usuarios uca ON s.id_cambiador = uca.id
+      ${whereClause}
+      ORDER BY s.creacion DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    // Query para contar total
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM solicitudes s
+      ${whereClause}
+    `;
+
+    console.log('📊 [Solicitudes] Query principal:', solicitudesQuery);
+    console.log('📊 [Solicitudes] Parámetros:', queryParams);
+
+    // Ejecutar ambas queries
+    const [solicitudes, countResult] = await Promise.all([
+      db.query(solicitudesQuery, queryParams),
+      db.query(countQuery, queryParams)
+    ]);
+
+    const total = (countResult as any[])[0]?.total || 0;
+    const totalPages = Math.ceil(total / limit);
+
+    console.log(`✅ [Solicitudes] Obtenidas: ${(solicitudes as any[]).length} de ${total} total`);
+
+    // Formatear fechas y datos
+    const solicitudesFormateadas = (solicitudes as SolicitudReal[]).map(solicitud => ({
+      ...solicitud,
+      // Asegurar que las fechas estén en formato correcto
+      creacion: new Date(solicitud.creacion).toISOString().slice(0, 19).replace('T', ' '),
+      cambio_estado: solicitud.cambio_estado ? 
+        new Date(solicitud.cambio_estado).toISOString().slice(0, 19).replace('T', ' ') : 
+        null
+    }));
+
+    res.json({
+      success: true,
+      message: 'Solicitudes obtenidas exitosamente',
+      data: {
+        solicitudes: solicitudesFormateadas,
+        total,
+        page,
+        limit,
+        totalPages
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [Solicitudes] Error obteniendo solicitudes:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Obtener estadísticas de solicitudes reales
+router.get('/estadisticas', async (req: Request, res: Response) => {
+  try {
+    console.log('📊 [Solicitudes] Obteniendo estadísticas reales');
+
+    const estadisticasQuery = `
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN id_estado = 1 THEN 1 ELSE 0 END) as pendientes,
+        SUM(CASE WHEN id_estado = 2 THEN 1 ELSE 0 END) as aprobadas,
+        SUM(CASE WHEN id_estado = 3 THEN 1 ELSE 0 END) as rechazadas,
+        ROUND(
+          (SUM(CASE WHEN id_estado = 2 THEN 1 ELSE 0 END) * 100.0 / COUNT(*)), 
+          2
+        ) as porcentaje_aprobacion
+      FROM solicitudes
+    `;
+
+    const resultado = await db.query(estadisticasQuery);
+    const stats = (resultado as any[])[0];
+
+    console.log('✅ [Solicitudes] Estadísticas obtenidas:', stats);
+
+    res.json({
+      success: true,
+      message: 'Estadísticas obtenidas exitosamente',
+      data: {
+        total: parseInt(stats.total) || 0,
+        pendientes: parseInt(stats.pendientes) || 0,
+        aprobadas: parseInt(stats.aprobadas) || 0,
+        rechazadas: parseInt(stats.rechazadas) || 0,
+        porcentaje_aprobacion: parseFloat(stats.porcentaje_aprobacion) || 0
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [Solicitudes] Error obteniendo estadísticas:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Obtener solicitud por ID
+router.get('/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    console.log(`🔍 [Solicitudes] Obteniendo solicitud ID: ${id}`);
+
+    const solicitudQuery = `
+      SELECT 
+        s.id,
+        s.aviso,
+        s.creacion,
+        s.id_estado,
+        se.estado,
+        s.id_equipo,
+        s.id_servicio,
+        s.id_creador,
+        s.observacion,
+        s.observacion_estado,
+        s.cambio_estado,
+        s.id_cambiador,
+        uc.nombre as creador_nombre,
+        uca.nombre as cambiador_nombre
+      FROM solicitudes s
+      LEFT JOIN solicitudes_estados se ON s.id_estado = se.id
+      LEFT JOIN usuarios uc ON s.id_creador = uc.id
+      LEFT JOIN usuarios uca ON s.id_cambiador = uca.id
+      WHERE s.id = ?
+    `;
+
+    const resultado = await db.query(solicitudQuery, [id]);
+    const solicitudes = resultado as SolicitudReal[];
+
+    if (!solicitudes || solicitudes.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Solicitud no encontrada'
+      });
+    }
+
+    const solicitud = solicitudes[0];
+
+    console.log(`✅ [Solicitudes] Solicitud obtenida: ${id}`);
+
+    res.json({
+      success: true,
+      message: 'Solicitud obtenida exitosamente',
+      data: {
+        ...solicitud,
+        creacion: new Date(solicitud.creacion).toISOString().slice(0, 19).replace('T', ' '),
+        cambio_estado: solicitud.cambio_estado ? 
+          new Date(solicitud.cambio_estado).toISOString().slice(0, 19).replace('T', ' ') : 
+          null
+      }
+    });
+
+  } catch (error) {
+    console.error(`❌ [Solicitudes] Error obteniendo solicitud ${req.params.id}:`, error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Crear nueva solicitud
+router.post('/', async (req: Request, res: Response) => {
+  try {
+    const { id_servicio, aviso, id_equipo, observacion } = req.body;
+    console.log('📝 [Solicitudes] Creando nueva solicitud:', req.body);
+
+    // Validaciones básicas
+    if (!id_servicio || !aviso || !observacion) {
+      return res.status(400).json({
+        success: false,
+        message: 'Campos requeridos: id_servicio, aviso, observacion'
+      });
+    }
+
+    // Insertar nueva solicitud
+    const insertQuery = `
+      INSERT INTO solicitudes (
+        id_creador, id_servicio, id_estado, aviso, id_equipo, observacion, observacion_estado
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    const id_creador = 1; // Usuario por defecto - esto debe venir del token
+    const id_estado = 1; // Pendiente por defecto
+
+    const resultado = await db.query(insertQuery, [
+      id_creador,
+      id_servicio,
+      id_estado,
+      aviso,
+      id_equipo || null,
+      observacion,
+      ''
+    ]);
+
+    const insertId = (resultado as any).insertId;
+
+    console.log(`✅ [Solicitudes] Solicitud creada con ID: ${insertId}`);
+
+    // Obtener la solicitud creada
+    const solicitudCreada = await db.query(`
+      SELECT 
+        s.id,
+        s.aviso,
+        s.creacion,
+        s.id_estado,
+        se.estado,
+        s.id_equipo,
+        s.id_servicio,
+        s.id_creador,
+        s.observacion,
+        s.observacion_estado
+      FROM solicitudes s
+      LEFT JOIN solicitudes_estados se ON s.id_estado = se.id
+      WHERE s.id = ?
+    `, [insertId]);
+
+    const solicitud = (solicitudCreada as SolicitudReal[])[0];
+
+    res.status(201).json({
+      success: true,
+      message: 'Solicitud creada exitosamente',
+      data: {
+        ...solicitud,
+        creacion: new Date(solicitud.creacion).toISOString().slice(0, 19).replace('T', ' ')
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [Solicitudes] Error creando solicitud:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Cambiar estado de solicitud
+router.patch('/:id/estado', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { id_estado, observacion_estado } = req.body;
+    
+    console.log(`🔄 [Solicitudes] Cambiando estado solicitud ${id}:`, req.body);
+
+    // Validaciones
+    if (!id_estado || ![1, 2, 3].includes(id_estado)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Estado debe ser 1 (Pendiente), 2 (Aprobada) o 3 (Rechazada)'
+      });
+    }
+
+    if (!observacion_estado) {
+      return res.status(400).json({
+        success: false,
+        message: 'La observación del estado es requerida'
+      });
+    }
+
+    // Actualizar estado
+    const updateQuery = `
+      UPDATE solicitudes 
+      SET id_estado = ?, observacion_estado = ?, id_cambiador = ?, cambio_estado = NOW()
+      WHERE id = ?
+    `;
+
+    const id_cambiador = 1; // Usuario por defecto - esto debe venir del token
+
+    await db.query(updateQuery, [id_estado, observacion_estado, id_cambiador, id]);
+
+    console.log(`✅ [Solicitudes] Estado actualizado para solicitud ${id}`);
+
+    // Obtener solicitud actualizada
+    const solicitudActualizada = await db.query(`
+      SELECT 
+        s.id,
+        s.aviso,
+        s.creacion,
+        s.id_estado,
+        se.estado,
+        s.id_equipo,
+        s.id_servicio,
+        s.id_creador,
+        s.observacion,
+        s.observacion_estado,
+        s.cambio_estado,
+        s.id_cambiador
+      FROM solicitudes s
+      LEFT JOIN solicitudes_estados se ON s.id_estado = se.id
+      WHERE s.id = ?
+    `, [id]);
+
+    const solicitud = (solicitudActualizada as SolicitudReal[])[0];
+
+    if (!solicitud) {
+      return res.status(404).json({
+        success: false,
+        message: 'Solicitud no encontrada'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Estado actualizado exitosamente',
+      data: {
+        ...solicitud,
+        creacion: new Date(solicitud.creacion).toISOString().slice(0, 19).replace('T', ' '),
+        cambio_estado: solicitud.cambio_estado ? 
+          new Date(solicitud.cambio_estado).toISOString().slice(0, 19).replace('T', ' ') : 
+          null
+      }
+    });
+
+  } catch (error) {
+    console.error(`❌ [Solicitudes] Error cambiando estado ${req.params.id}:`, error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+export default router;

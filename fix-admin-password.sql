@@ -1,0 +1,2 @@
+UPDATE users SET password = '$2a$10$oIGy96GvAlW/6IfpPRPKd..E2LxP5en4gGc7Y79xT2xKlWiSsM2TO' WHERE username = 'admin';
+SELECT username, password, LENGTH(password) as pwd_length FROM users WHERE username = 'admin';

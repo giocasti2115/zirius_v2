@@ -1,0 +1,690 @@
+import * as expressValidator from 'express-validator';
+const { body, param, query } = expressValidator;
+
+// Define ValidationChain locally since the import is having issues
+export type ValidationChain = any;
+
+/**
+ * Validaciones específicas para diferentes entidades del módulo Generales
+ */
+
+// =============================================================================
+// TIPOS DE EQUIPOS
+// =============================================================================
+
+export const tipoEquipoValidation = {
+  create: [
+    body('nombre')
+      .notEmpty()
+      .withMessage('El nombre es obligatorio')
+      .isLength({ min: 2, max: 100 })
+      .withMessage('El nombre debe tener entre 2 y 100 caracteres')
+      .matches(/^[a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s\-_.,()]+$/)
+      .withMessage('El nombre contiene caracteres no válidos'),
+    
+    body('descripcion')
+      .optional()
+      .isLength({ max: 500 })
+      .withMessage('La descripción no puede exceder 500 caracteres'),
+    
+    body('categoria')
+      .optional()
+      .isIn(['BIOMEDICO', 'INFORMATICO', 'MOBILIARIO', 'INFRAESTRUCTURA', 'OTRO'])
+      .withMessage('Categoría no válida'),
+    
+    body('requiere_calibracion')
+      .optional()
+      .isBoolean()
+      .withMessage('Requiere calibración debe ser true o false'),
+    
+    body('vida_util_anos')
+      .optional()
+      .isInt({ min: 1, max: 50 })
+      .withMessage('La vida útil debe ser entre 1 y 50 años'),
+    
+    body('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ],
+  
+  update: [
+    param('id')
+      .isInt({ min: 1 })
+      .withMessage('ID debe ser un número entero válido'),
+    
+    body('nombre')
+      .optional()
+      .isLength({ min: 2, max: 100 })
+      .withMessage('El nombre debe tener entre 2 y 100 caracteres')
+      .matches(/^[a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s\-_.,()]+$/)
+      .withMessage('El nombre contiene caracteres no válidos'),
+    
+    body('descripcion')
+      .optional()
+      .isLength({ max: 500 })
+      .withMessage('La descripción no puede exceder 500 caracteres'),
+    
+    body('categoria')
+      .optional()
+      .isIn(['BIOMEDICO', 'INFORMATICO', 'MOBILIARIO', 'INFRAESTRUCTURA', 'OTRO'])
+      .withMessage('Categoría no válida'),
+    
+    body('requiere_calibracion')
+      .optional()
+      .isBoolean()
+      .withMessage('Requiere calibración debe ser true o false'),
+    
+    body('vida_util_anos')
+      .optional()
+      .isInt({ min: 1, max: 50 })
+      .withMessage('La vida útil debe ser entre 1 y 50 años'),
+    
+    body('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ]
+};
+
+// =============================================================================
+// MARCAS
+// =============================================================================
+
+export const marcaValidation = {
+  create: [
+    body('nombre')
+      .notEmpty()
+      .withMessage('El nombre es obligatorio')
+      .isLength({ min: 2, max: 100 })
+      .withMessage('El nombre debe tener entre 2 y 100 caracteres')
+      .matches(/^[a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s\-_.,()&]+$/)
+      .withMessage('El nombre contiene caracteres no válidos'),
+    
+    body('descripcion')
+      .optional()
+      .isLength({ max: 500 })
+      .withMessage('La descripción no puede exceder 500 caracteres'),
+    
+    body('pais_origen')
+      .optional()
+      .isLength({ max: 50 })
+      .withMessage('El país de origen no puede exceder 50 caracteres'),
+    
+    body('sitio_web')
+      .optional()
+      .isURL()
+      .withMessage('El sitio web debe ser una URL válida'),
+    
+    body('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ],
+  
+  update: [
+    param('id')
+      .isInt({ min: 1 })
+      .withMessage('ID debe ser un número entero válido'),
+    
+    body('nombre')
+      .optional()
+      .isLength({ min: 2, max: 100 })
+      .withMessage('El nombre debe tener entre 2 y 100 caracteres')
+      .matches(/^[a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s\-_.,()&]+$/)
+      .withMessage('El nombre contiene caracteres no válidos'),
+    
+    body('descripcion')
+      .optional()
+      .isLength({ max: 500 })
+      .withMessage('La descripción no puede exceder 500 caracteres'),
+    
+    body('pais_origen')
+      .optional()
+      .isLength({ max: 50 })
+      .withMessage('El país de origen no puede exceder 50 caracteres'),
+    
+    body('sitio_web')
+      .optional()
+      .isURL()
+      .withMessage('El sitio web debe ser una URL válida'),
+    
+    body('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ]
+};
+
+// =============================================================================
+// ESTADOS
+// =============================================================================
+
+export const estadoValidation = {
+  create: [
+    body('nombre')
+      .notEmpty()
+      .withMessage('El nombre es obligatorio')
+      .isLength({ min: 2, max: 50 })
+      .withMessage('El nombre debe tener entre 2 y 50 caracteres')
+      .matches(/^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s\-_]+$/)
+      .withMessage('El nombre contiene caracteres no válidos'),
+    
+    body('descripcion')
+      .optional()
+      .isLength({ max: 200 })
+      .withMessage('La descripción no puede exceder 200 caracteres'),
+    
+    body('color')
+      .notEmpty()
+      .withMessage('El color es obligatorio')
+      .matches(/^#[0-9a-fA-F]{6}$/)
+      .withMessage('El color debe ser un código hexadecimal válido'),
+    
+    body('tipo')
+      .notEmpty()
+      .withMessage('El tipo es obligatorio')
+      .isIn(['EQUIPO', 'SOLICITUD', 'ORDEN', 'MANTENIMIENTO', 'CALIBRACION', 'GENERAL'])
+      .withMessage('Tipo de estado no válido'),
+    
+    body('es_final')
+      .optional()
+      .isBoolean()
+      .withMessage('Es final debe ser true o false'),
+    
+    body('permite_edicion')
+      .optional()
+      .isBoolean()
+      .withMessage('Permite edición debe ser true o false'),
+    
+    body('orden')
+      .optional()
+      .isInt({ min: 1 })
+      .withMessage('El orden debe ser un número entero positivo'),
+    
+    body('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ],
+  
+  update: [
+    param('id')
+      .isInt({ min: 1 })
+      .withMessage('ID debe ser un número entero válido'),
+    
+    body('nombre')
+      .optional()
+      .isLength({ min: 2, max: 50 })
+      .withMessage('El nombre debe tener entre 2 y 50 caracteres')
+      .matches(/^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s\-_]+$/)
+      .withMessage('El nombre contiene caracteres no válidos'),
+    
+    body('descripcion')
+      .optional()
+      .isLength({ max: 200 })
+      .withMessage('La descripción no puede exceder 200 caracteres'),
+    
+    body('color')
+      .optional()
+      .matches(/^#[0-9a-fA-F]{6}$/)
+      .withMessage('El color debe ser un código hexadecimal válido'),
+    
+    body('tipo')
+      .optional()
+      .isIn(['EQUIPO', 'SOLICITUD', 'ORDEN', 'MANTENIMIENTO', 'CALIBRACION', 'GENERAL'])
+      .withMessage('Tipo de estado no válido'),
+    
+    body('es_final')
+      .optional()
+      .isBoolean()
+      .withMessage('Es final debe ser true o false'),
+    
+    body('permite_edicion')
+      .optional()
+      .isBoolean()
+      .withMessage('Permite edición debe ser true o false'),
+    
+    body('orden')
+      .optional()
+      .isInt({ min: 1 })
+      .withMessage('El orden debe ser un número entero positivo'),
+    
+    body('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ]
+};
+
+// =============================================================================
+// PRIORIDADES
+// =============================================================================
+
+export const prioridadValidation = {
+  create: [
+    body('nombre')
+      .notEmpty()
+      .withMessage('El nombre es obligatorio')
+      .isLength({ min: 2, max: 50 })
+      .withMessage('El nombre debe tener entre 2 y 50 caracteres')
+      .matches(/^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s\-_]+$/)
+      .withMessage('El nombre contiene caracteres no válidos'),
+    
+    body('descripcion')
+      .optional()
+      .isLength({ max: 200 })
+      .withMessage('La descripción no puede exceder 200 caracteres'),
+    
+    body('color')
+      .notEmpty()
+      .withMessage('El color es obligatorio')
+      .matches(/^#[0-9a-fA-F]{6}$/)
+      .withMessage('El color debe ser un código hexadecimal válido'),
+    
+    body('nivel')
+      .notEmpty()
+      .withMessage('El nivel es obligatorio')
+      .isInt({ min: 1, max: 10 })
+      .withMessage('El nivel debe ser un número entre 1 y 10'),
+    
+    body('tiempo_respuesta_horas')
+      .optional()
+      .isInt({ min: 1 })
+      .withMessage('El tiempo de respuesta debe ser un número entero positivo'),
+    
+    body('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ],
+  
+  update: [
+    param('id')
+      .isInt({ min: 1 })
+      .withMessage('ID debe ser un número entero válido'),
+    
+    body('nombre')
+      .optional()
+      .isLength({ min: 2, max: 50 })
+      .withMessage('El nombre debe tener entre 2 y 50 caracteres')
+      .matches(/^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s\-_]+$/)
+      .withMessage('El nombre contiene caracteres no válidos'),
+    
+    body('descripcion')
+      .optional()
+      .isLength({ max: 200 })
+      .withMessage('La descripción no puede exceder 200 caracteres'),
+    
+    body('color')
+      .optional()
+      .matches(/^#[0-9a-fA-F]{6}$/)
+      .withMessage('El color debe ser un código hexadecimal válido'),
+    
+    body('nivel')
+      .optional()
+      .isInt({ min: 1, max: 10 })
+      .withMessage('El nivel debe ser un número entre 1 y 10'),
+    
+    body('tiempo_respuesta_horas')
+      .optional()
+      .isInt({ min: 1 })
+      .withMessage('El tiempo de respuesta debe ser un número entero positivo'),
+    
+    body('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ]
+};
+
+// =============================================================================
+// VARIABLES DEL SISTEMA
+// =============================================================================
+
+export const variableSistemaValidation = {
+  create: [
+    body('clave')
+      .notEmpty()
+      .withMessage('La clave es obligatoria')
+      .isLength({ min: 3, max: 100 })
+      .withMessage('La clave debe tener entre 3 y 100 caracteres')
+      .matches(/^[a-z0-9_\.]+$/)
+      .withMessage('La clave solo puede contener letras minúsculas, números, puntos y guiones bajos'),
+    
+    body('valor')
+      .notEmpty()
+      .withMessage('El valor es obligatorio')
+      .isLength({ max: 1000 })
+      .withMessage('El valor no puede exceder 1000 caracteres'),
+    
+    body('descripcion')
+      .notEmpty()
+      .withMessage('La descripción es obligatoria')
+      .isLength({ min: 10, max: 500 })
+      .withMessage('La descripción debe tener entre 10 y 500 caracteres'),
+    
+    body('tipo')
+      .notEmpty()
+      .withMessage('El tipo es obligatorio')
+      .isIn(['string', 'number', 'boolean', 'json', 'email', 'url'])
+      .withMessage('Tipo de variable no válido'),
+    
+    body('categoria')
+      .notEmpty()
+      .withMessage('La categoría es obligatoria')
+      .isIn(['sistema', 'email', 'respaldos', 'logs', 'notificaciones', 'mantenimiento', 'calibracion'])
+      .withMessage('Categoría no válida'),
+    
+    body('es_publica')
+      .optional()
+      .isBoolean()
+      .withMessage('Es pública debe ser true o false'),
+    
+    body('modificable')
+      .optional()
+      .isBoolean()
+      .withMessage('Modificable debe ser true o false'),
+    
+    body('validacion_regex')
+      .optional()
+      .isLength({ max: 255 })
+      .withMessage('La expresión regular no puede exceder 255 caracteres')
+  ],
+  
+  update: [
+    param('id')
+      .isInt({ min: 1 })
+      .withMessage('ID debe ser un número entero válido'),
+    
+    body('valor')
+      .optional()
+      .isLength({ max: 1000 })
+      .withMessage('El valor no puede exceder 1000 caracteres'),
+    
+    body('descripcion')
+      .optional()
+      .isLength({ min: 10, max: 500 })
+      .withMessage('La descripción debe tener entre 10 y 500 caracteres'),
+    
+    body('es_publica')
+      .optional()
+      .isBoolean()
+      .withMessage('Es pública debe ser true o false'),
+    
+    body('modificable')
+      .optional()
+      .isBoolean()
+      .withMessage('Modificable debe ser true o false'),
+    
+    body('validacion_regex')
+      .optional()
+      .isLength({ max: 255 })
+      .withMessage('La expresión regular no puede exceder 255 caracteres')
+  ]
+};
+
+// =============================================================================
+// CONFIGURACIONES DE RESPALDO
+// =============================================================================
+
+export const configuracionRespaldoValidation = {
+  create: [
+    body('nombre')
+      .notEmpty()
+      .withMessage('El nombre es obligatorio')
+      .isLength({ min: 3, max: 100 })
+      .withMessage('El nombre debe tener entre 3 y 100 caracteres'),
+    
+    body('tipo')
+      .notEmpty()
+      .withMessage('El tipo es obligatorio')
+      .isIn(['COMPLETO', 'INCREMENTAL', 'DIFERENCIAL'])
+      .withMessage('Tipo de respaldo no válido'),
+    
+    body('frecuencia')
+      .notEmpty()
+      .withMessage('La frecuencia es obligatoria')
+      .isIn(['DIARIO', 'SEMANAL', 'MENSUAL', 'MANUAL'])
+      .withMessage('Frecuencia no válida'),
+    
+    body('hora_ejecucion')
+      .notEmpty()
+      .withMessage('La hora de ejecución es obligatoria')
+      .matches(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/)
+      .withMessage('La hora debe tener formato HH:MM'),
+    
+    body('ruta_destino')
+      .notEmpty()
+      .withMessage('La ruta de destino es obligatoria')
+      .isLength({ max: 500 })
+      .withMessage('La ruta no puede exceder 500 caracteres'),
+    
+    body('retencion_dias')
+      .notEmpty()
+      .withMessage('Los días de retención son obligatorios')
+      .isInt({ min: 1, max: 365 })
+      .withMessage('Los días de retención deben estar entre 1 y 365'),
+    
+    body('incluir_archivos')
+      .optional()
+      .isBoolean()
+      .withMessage('Incluir archivos debe ser true o false'),
+    
+    body('incluir_base_datos')
+      .optional()
+      .isBoolean()
+      .withMessage('Incluir base de datos debe ser true o false'),
+    
+    body('comprimir')
+      .optional()
+      .isBoolean()
+      .withMessage('Comprimir debe ser true o false'),
+    
+    body('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ],
+  
+  update: [
+    param('id')
+      .isInt({ min: 1 })
+      .withMessage('ID debe ser un número entero válido'),
+    
+    body('nombre')
+      .optional()
+      .isLength({ min: 3, max: 100 })
+      .withMessage('El nombre debe tener entre 3 y 100 caracteres'),
+    
+    body('tipo')
+      .optional()
+      .isIn(['COMPLETO', 'INCREMENTAL', 'DIFERENCIAL'])
+      .withMessage('Tipo de respaldo no válido'),
+    
+    body('frecuencia')
+      .optional()
+      .isIn(['DIARIO', 'SEMANAL', 'MENSUAL', 'MANUAL'])
+      .withMessage('Frecuencia no válida'),
+    
+    body('hora_ejecucion')
+      .optional()
+      .matches(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/)
+      .withMessage('La hora debe tener formato HH:MM'),
+    
+    body('ruta_destino')
+      .optional()
+      .isLength({ max: 500 })
+      .withMessage('La ruta no puede exceder 500 caracteres'),
+    
+    body('retencion_dias')
+      .optional()
+      .isInt({ min: 1, max: 365 })
+      .withMessage('Los días de retención deben estar entre 1 y 365'),
+    
+    body('incluir_archivos')
+      .optional()
+      .isBoolean()
+      .withMessage('Incluir archivos debe ser true o false'),
+    
+    body('incluir_base_datos')
+      .optional()
+      .isBoolean()
+      .withMessage('Incluir base de datos debe ser true o false'),
+    
+    body('comprimir')
+      .optional()
+      .isBoolean()
+      .withMessage('Comprimir debe ser true o false'),
+    
+    body('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ]
+};
+
+// =============================================================================
+// PLANTILLAS DE NOTIFICACIÓN
+// =============================================================================
+
+export const plantillaNotificacionValidation = {
+  create: [
+    body('nombre')
+      .notEmpty()
+      .withMessage('El nombre es obligatorio')
+      .isLength({ min: 3, max: 100 })
+      .withMessage('El nombre debe tener entre 3 y 100 caracteres'),
+    
+    body('asunto')
+      .notEmpty()
+      .withMessage('El asunto es obligatorio')
+      .isLength({ min: 5, max: 200 })
+      .withMessage('El asunto debe tener entre 5 y 200 caracteres'),
+    
+    body('contenido')
+      .notEmpty()
+      .withMessage('El contenido es obligatorio')
+      .isLength({ min: 10, max: 2000 })
+      .withMessage('El contenido debe tener entre 10 y 2000 caracteres'),
+    
+    body('tipo')
+      .notEmpty()
+      .withMessage('El tipo es obligatorio')
+      .isIn(['EMAIL', 'SMS', 'PUSH', 'SISTEMA'])
+      .withMessage('Tipo de notificación no válido'),
+    
+    body('evento')
+      .notEmpty()
+      .withMessage('El evento es obligatorio')
+      .isIn(['MANTENIMIENTO_VENCIDO', 'CALIBRACION_VENCIDA', 'EQUIPO_FUERA_SERVICIO', 'SOLICITUD_PENDIENTE', 'RESPALDO_FALLIDO', 'SISTEMA_ERROR'])
+      .withMessage('Evento no válido'),
+    
+    body('variables_disponibles')
+      .optional()
+      .isArray()
+      .withMessage('Las variables disponibles deben ser un array'),
+    
+    body('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ],
+  
+  update: [
+    param('id')
+      .isInt({ min: 1 })
+      .withMessage('ID debe ser un número entero válido'),
+    
+    body('nombre')
+      .optional()
+      .isLength({ min: 3, max: 100 })
+      .withMessage('El nombre debe tener entre 3 y 100 caracteres'),
+    
+    body('asunto')
+      .optional()
+      .isLength({ min: 5, max: 200 })
+      .withMessage('El asunto debe tener entre 5 y 200 caracteres'),
+    
+    body('contenido')
+      .optional()
+      .isLength({ min: 10, max: 2000 })
+      .withMessage('El contenido debe tener entre 10 y 2000 caracteres'),
+    
+    body('tipo')
+      .optional()
+      .isIn(['EMAIL', 'SMS', 'PUSH', 'SISTEMA'])
+      .withMessage('Tipo de notificación no válido'),
+    
+    body('evento')
+      .optional()
+      .isIn(['MANTENIMIENTO_VENCIDO', 'CALIBRACION_VENCIDA', 'EQUIPO_FUERA_SERVICIO', 'SOLICITUD_PENDIENTE', 'RESPALDO_FALLIDO', 'SISTEMA_ERROR'])
+      .withMessage('Evento no válido'),
+    
+    body('variables_disponibles')
+      .optional()
+      .isArray()
+      .withMessage('Las variables disponibles deben ser un array'),
+    
+    body('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ]
+};
+
+// =============================================================================
+// VALIDACIONES COMUNES
+// =============================================================================
+
+export const commonValidation = {
+  id: [
+    param('id')
+      .isInt({ min: 1 })
+      .withMessage('ID debe ser un número entero válido')
+  ],
+  
+  pagination: [
+    query('page')
+      .optional()
+      .isInt({ min: 1 })
+      .withMessage('La página debe ser un número entero positivo'),
+    
+    query('limit')
+      .optional()
+      .isInt({ min: 1, max: 100 })
+      .withMessage('El límite debe ser un número entre 1 y 100'),
+    
+    query('search')
+      .optional()
+      .isLength({ max: 100 })
+      .withMessage('El término de búsqueda no puede exceder 100 caracteres'),
+    
+    query('sortBy')
+      .optional()
+      .isLength({ max: 50 })
+      .withMessage('El campo de ordenamiento no puede exceder 50 caracteres'),
+    
+    query('sortOrder')
+      .optional()
+      .isIn(['ASC', 'DESC'])
+      .withMessage('El orden debe ser ASC o DESC'),
+    
+    query('activo')
+      .optional()
+      .isBoolean()
+      .withMessage('Activo debe ser true o false')
+  ],
+  
+  dateRange: [
+    query('fechaInicio')
+      .optional()
+      .isISO8601()
+      .withMessage('La fecha de inicio debe ser una fecha válida en formato ISO8601'),
+    
+    query('fechaFin')
+      .optional()
+      .isISO8601()
+      .withMessage('La fecha de fin debe ser una fecha válida en formato ISO8601')
+  ]
+};

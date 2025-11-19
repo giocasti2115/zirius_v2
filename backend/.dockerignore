@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log
+dist
+.git
+.gitignore
+README.md
+Dockerfile
+.dockerignore
+.env.local
+.env.development
+.env.production
+scripts/test-*.ts
+src/test-*.ts
+*.test.ts
+coverage/
+.nyc_output/

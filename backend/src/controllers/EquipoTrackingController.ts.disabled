@@ -1,0 +1,881 @@
+import { Request, Response } from 'express';
+import expressValidator from 'express-validator';
+const { validationResult } = expressValidator;
+import { AppDataSource } from '../config/database';
+import { Equipo } from '../entities/Equipo';
+import { EquipoTracking } from '../entities/EquipoTracking';
+import { MantenimientoEquipo } from '../entities/MantenimientoEquipo';
+import { FotoEquipo } from '../entities/FotoEquipo';
+import { AlertaEquipo } from '../entities/AlertaEquipo';
+import logger from '../utils/logger';
+import { uploadToCloudStorage, deleteFromCloudStorage } from '../services/storageService';
+import { sendPushNotification } from '../services/notificationService';
+import { calculateMTBF, calculateMTTR, calculateDisponibilidad } from '../utils/equipoMetrics';
+
+export class EquipoTrackingController {
+  
+  // Obtener todos los equipos con tracking
+  async getEquiposWithTracking(req: Request, res: Response) {
+    try {
+      const { 
+        tipo, 
+        estado, 
+        ubicacion, 
+        incluirHistorial = false,
+        incluirMantenimientos = false,
+        incluirFotos = false,
+        incluirAlertas = true
+      } = req.query;
+
+      const equipoRepository = AppDataSource.getRepository(Equipo);
+      const queryBuilder = equipoRepository.createQueryBuilder('equipo')
+        .leftJoinAndSelect('equipo.tracking', 'tracking')
+        .leftJoinAndSelect('equipo.usuario', 'usuario');
+
+      // Aplicar filtros
+      if (tipo) {
+        queryBuilder.andWhere('equipo.tipo = :tipo', { tipo });
+      }
+
+      if (estado) {
+        queryBuilder.andWhere('equipo.estado = :estado', { estado });
+      }
+
+      if (ubicacion) {
+        queryBuilder.andWhere('equipo.ubicacion LIKE :ubicacion', { 
+          ubicacion: `%${ubicacion}%` 
+        });
+      }
+
+      // Incluir relaciones adicionales según parámetros
+      if (incluirMantenimientos === 'true') {
+        queryBuilder.leftJoinAndSelect('equipo.mantenimientos', 'mantenimientos');
+      }
+
+      if (incluirFotos === 'true') {
+        queryBuilder.leftJoinAndSelect('equipo.fotos', 'fotos');
+      }
+
+      if (incluirAlertas === 'true') {
+        queryBuilder.leftJoinAndSelect('equipo.alertas', 'alertas', 
+          'alertas.fechaResolucion IS NULL');
+      }
+
+      const equipos = await queryBuilder.getMany();
+
+      // Enriquecer con métricas calculadas
+      const equiposEnriquecidos = await Promise.all(
+        equipos.map(async (equipo) => {
+          const metricas = await this.calcularMetricasEquipo(equipo.id);
+          
+          let historial = [];
+          if (incluirHistorial === 'true') {
+            historial = await this.getHistorialUbicaciones(equipo.id);
+          }
+
+          return {
+            ...equipo,
+            metricas,
+            historial
+          };
+        })
+      );
+
+      res.json({
+        success: true,
+        data: equiposEnriquecidos,
+        total: equiposEnriquecidos.length
+      });
+
+    } catch (error) {
+      logger.error('Error al obtener equipos con tracking:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // Actualizar ubicación de equipo
+  async updateEquipoLocation(req: Request, res: Response) {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Datos de validación incorrectos',
+          errors: errors.array()
+        });
+      }
+
+      const { equipoId } = req.params;
+      const { 
+        latitud, 
+        longitud, 
+        direccion, 
+        precision, 
+        usuarioId,
+        observaciones 
+      } = req.body;
+
+      const equipoRepository = AppDataSource.getRepository(Equipo);
+      const trackingRepository = AppDataSource.getRepository(EquipoTracking);
+
+      // Verificar que el equipo existe
+      const equipo = await equipoRepository.findOne({
+        where: { id: parseInt(equipoId) },
+        relations: ['zonaAutorizada']
+      });
+
+      if (!equipo) {
+        return res.status(404).json({
+          success: false,
+          message: 'Equipo no encontrado'
+        });
+      }
+
+      // Crear registro de tracking
+      const tracking = new EquipoTracking();
+      tracking.equipoId = equipo.id;
+      tracking.latitud = latitud;
+      tracking.longitud = longitud;
+      tracking.direccion = direccion;
+      tracking.precision = precision;
+      tracking.usuarioId = usuarioId;
+      tracking.observaciones = observaciones;
+      tracking.fechaRegistro = new Date();
+
+      // Verificar zona autorizada si existe
+      if (equipo.zonaAutorizada) {
+        const distancia = this.calcularDistancia(
+          latitud, 
+          longitud,
+          equipo.zonaAutorizada.latitud,
+          equipo.zonaAutorizada.longitud
+        );
+
+        tracking.dentroZonaAutorizada = distancia <= equipo.zonaAutorizada.radio;
+
+        // Crear alerta si está fuera de zona
+        if (!tracking.dentroZonaAutorizada) {
+          await this.crearAlertaUbicacion(equipo, tracking, distancia);
+        }
+      }
+
+      const trackingGuardado = await trackingRepository.save(tracking);
+
+      // Actualizar ubicación actual del equipo
+      equipo.ubicacionActual = direccion;
+      equipo.latitudActual = latitud;
+      equipo.longitudActual = longitud;
+      equipo.fechaUltimaUbicacion = new Date();
+      await equipoRepository.save(equipo);
+
+      logger.info(`Ubicación actualizada para equipo ${equipoId}`, {
+        equipoId,
+        latitud,
+        longitud,
+        usuarioId
+      });
+
+      res.json({
+        success: true,
+        message: 'Ubicación actualizada correctamente',
+        data: trackingGuardado
+      });
+
+    } catch (error) {
+      logger.error('Error al actualizar ubicación:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // Crear mantenimiento de equipo
+  async createMantenimiento(req: Request, res: Response) {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Datos de validación incorrectos',
+          errors: errors.array()
+        });
+      }
+
+      const { equipoId } = req.params;
+      const {
+        tipo,
+        descripcion,
+        tecnicoId,
+        fechaProgramada,
+        prioridad,
+        estimacionDuracion,
+        checkpoints,
+        observaciones
+      } = req.body;
+
+      const equipoRepository = AppDataSource.getRepository(Equipo);
+      const mantenimientoRepository = AppDataSource.getRepository(MantenimientoEquipo);
+
+      const equipo = await equipoRepository.findOne({
+        where: { id: parseInt(equipoId) }
+      });
+
+      if (!equipo) {
+        return res.status(404).json({
+          success: false,
+          message: 'Equipo no encontrado'
+        });
+      }
+
+      // Crear mantenimiento
+      const mantenimiento = new MantenimientoEquipo();
+      mantenimiento.equipoId = equipo.id;
+      mantenimiento.tipo = tipo;
+      mantenimiento.descripcion = descripcion;
+      mantenimiento.tecnicoId = tecnicoId;
+      mantenimiento.fechaProgramada = new Date(fechaProgramada);
+      mantenimiento.prioridad = prioridad;
+      mantenimiento.estimacionDuracion = estimacionDuracion;
+      mantenimiento.checkpoints = checkpoints || [];
+      mantenimiento.observaciones = observaciones;
+      mantenimiento.estado = 'programado';
+      mantenimiento.fechaCreacion = new Date();
+
+      const mantenimientoGuardado = await mantenimientoRepository.save(mantenimiento);
+
+      // Generar QR code para el mantenimiento
+      const qrData = {
+        mantenimientoId: mantenimientoGuardado.id,
+        equipoId: equipo.id,
+        tipo: tipo,
+        fechaProgramada: fechaProgramada
+      };
+
+      mantenimientoGuardado.qrCode = Buffer.from(JSON.stringify(qrData)).toString('base64');
+      await mantenimientoRepository.save(mantenimientoGuardado);
+
+      // Enviar notificación al técnico
+      await sendPushNotification(tecnicoId, {
+        title: 'Nuevo Mantenimiento Asignado',
+        body: `${tipo} programado para ${equipo.nombre}`,
+        data: {
+          type: 'mantenimiento',
+          mantenimientoId: mantenimientoGuardado.id.toString(),
+          equipoId: equipoId
+        }
+      });
+
+      logger.info(`Mantenimiento creado para equipo ${equipoId}`, {
+        mantenimientoId: mantenimientoGuardado.id,
+        tipo,
+        tecnicoId
+      });
+
+      res.status(201).json({
+        success: true,
+        message: 'Mantenimiento creado correctamente',
+        data: mantenimientoGuardado
+      });
+
+    } catch (error) {
+      logger.error('Error al crear mantenimiento:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // Iniciar mantenimiento
+  async iniciarMantenimiento(req: Request, res: Response) {
+    try {
+      const { mantenimientoId } = req.params;
+      const { usuarioId, latitud, longitud, observacionesInicio } = req.body;
+
+      const mantenimientoRepository = AppDataSource.getRepository(MantenimientoEquipo);
+      const equipoRepository = AppDataSource.getRepository(Equipo);
+
+      const mantenimiento = await mantenimientoRepository.findOne({
+        where: { id: parseInt(mantenimientoId) },
+        relations: ['equipo']
+      });
+
+      if (!mantenimiento) {
+        return res.status(404).json({
+          success: false,
+          message: 'Mantenimiento no encontrado'
+        });
+      }
+
+      if (mantenimiento.estado !== 'programado') {
+        return res.status(400).json({
+          success: false,
+          message: 'El mantenimiento no está en estado programado'
+        });
+      }
+
+      // Actualizar mantenimiento
+      mantenimiento.estado = 'en_progreso';
+      mantenimiento.fechaInicio = new Date();
+      mantenimiento.usuarioInicioId = usuarioId;
+      mantenimiento.latitudInicio = latitud;
+      mantenimiento.longitudInicio = longitud;
+      mantenimiento.observacionesInicio = observacionesInicio;
+
+      // Actualizar estado del equipo
+      const equipo = await equipoRepository.findOne({
+        where: { id: mantenimiento.equipoId }
+      });
+
+      if (equipo) {
+        equipo.estado = 'mantenimiento';
+        equipo.fechaUltimaActividad = new Date();
+        await equipoRepository.save(equipo);
+      }
+
+      const mantenimientoActualizado = await mantenimientoRepository.save(mantenimiento);
+
+      logger.info(`Mantenimiento iniciado: ${mantenimientoId}`, {
+        mantenimientoId,
+        usuarioId,
+        equipoId: mantenimiento.equipoId
+      });
+
+      res.json({
+        success: true,
+        message: 'Mantenimiento iniciado correctamente',
+        data: mantenimientoActualizado
+      });
+
+    } catch (error) {
+      logger.error('Error al iniciar mantenimiento:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // Completar checkpoint de mantenimiento
+  async completarCheckpoint(req: Request, res: Response) {
+    try {
+      const { mantenimientoId, checkpointId } = req.params;
+      const { 
+        observaciones, 
+        mediciones, 
+        fotos, 
+        usuarioId,
+        latitud,
+        longitud 
+      } = req.body;
+
+      const mantenimientoRepository = AppDataSource.getRepository(MantenimientoEquipo);
+
+      const mantenimiento = await mantenimientoRepository.findOne({
+        where: { id: parseInt(mantenimientoId) }
+      });
+
+      if (!mantenimiento) {
+        return res.status(404).json({
+          success: false,
+          message: 'Mantenimiento no encontrado'
+        });
+      }
+
+      // Actualizar checkpoint
+      const checkpoints = mantenimiento.checkpoints || [];
+      const checkpointIndex = checkpoints.findIndex(cp => cp.id === checkpointId);
+
+      if (checkpointIndex === -1) {
+        return res.status(404).json({
+          success: false,
+          message: 'Checkpoint no encontrado'
+        });
+      }
+
+      checkpoints[checkpointIndex] = {
+        ...checkpoints[checkpointIndex],
+        completado: true,
+        fechaCompletado: new Date().toISOString(),
+        observaciones,
+        mediciones,
+        fotos,
+        usuarioCompletadoId: usuarioId,
+        latitud,
+        longitud
+      };
+
+      mantenimiento.checkpoints = checkpoints;
+      await mantenimientoRepository.save(mantenimiento);
+
+      logger.info(`Checkpoint completado: ${checkpointId} del mantenimiento ${mantenimientoId}`);
+
+      res.json({
+        success: true,
+        message: 'Checkpoint completado correctamente',
+        data: mantenimiento
+      });
+
+    } catch (error) {
+      logger.error('Error al completar checkpoint:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // Finalizar mantenimiento
+  async finalizarMantenimiento(req: Request, res: Response) {
+    try {
+      const { mantenimientoId } = req.params;
+      const {
+        observacionesFinales,
+        condicionesPost,
+        certificacionCalidad,
+        usuarioId,
+        latitud,
+        longitud
+      } = req.body;
+
+      const mantenimientoRepository = AppDataSource.getRepository(MantenimientoEquipo);
+      const equipoRepository = AppDataSource.getRepository(Equipo);
+
+      const mantenimiento = await mantenimientoRepository.findOne({
+        where: { id: parseInt(mantenimientoId) },
+        relations: ['equipo']
+      });
+
+      if (!mantenimiento) {
+        return res.status(404).json({
+          success: false,
+          message: 'Mantenimiento no encontrado'
+        });
+      }
+
+      // Verificar que todos los checkpoints requeridos estén completados
+      const checkpointsRequeridos = mantenimiento.checkpoints?.filter(cp => cp.requerido) || [];
+      const checkpointsCompletados = checkpointsRequeridos.filter(cp => cp.completado);
+
+      if (checkpointsCompletados.length < checkpointsRequeridos.length) {
+        return res.status(400).json({
+          success: false,
+          message: 'Debe completar todos los checkpoints requeridos antes de finalizar'
+        });
+      }
+
+      // Finalizar mantenimiento
+      mantenimiento.estado = 'completado';
+      mantenimiento.fechaFinalizacion = new Date();
+      mantenimiento.usuarioFinalizacionId = usuarioId;
+      mantenimiento.observacionesFinales = observacionesFinales;
+      mantenimiento.condicionesPost = condicionesPost;
+      mantenimiento.certificacionCalidad = certificacionCalidad;
+      mantenimiento.latitudFinalizacion = latitud;
+      mantenimiento.longitudFinalizacion = longitud;
+
+      // Calcular duración real
+      if (mantenimiento.fechaInicio) {
+        const duracion = (mantenimiento.fechaFinalizacion.getTime() - mantenimiento.fechaInicio.getTime()) / (1000 * 60 * 60);
+        mantenimiento.duracionReal = duracion;
+      }
+
+      // Actualizar estado del equipo
+      const equipo = await equipoRepository.findOne({
+        where: { id: mantenimiento.equipoId }
+      });
+
+      if (equipo) {
+        equipo.estado = certificacionCalidad ? 'operativo' : 'revision';
+        equipo.fechaUltimaActividad = new Date();
+        
+        // Calcular próximo mantenimiento
+        if (mantenimiento.tipo === 'preventivo') {
+          const proximaFecha = new Date();
+          proximaFecha.setDate(proximaFecha.getDate() + 90); // 90 días por defecto
+          equipo.proximoMantenimiento = proximaFecha;
+        }
+
+        await equipoRepository.save(equipo);
+      }
+
+      const mantenimientoFinalizado = await mantenimientoRepository.save(mantenimiento);
+
+      // Recalcular métricas del equipo
+      await this.recalcularMetricasEquipo(mantenimiento.equipoId);
+
+      logger.info(`Mantenimiento finalizado: ${mantenimientoId}`, {
+        mantenimientoId,
+        duracionReal: mantenimiento.duracionReal,
+        certificacionCalidad
+      });
+
+      res.json({
+        success: true,
+        message: 'Mantenimiento finalizado correctamente',
+        data: mantenimientoFinalizado
+      });
+
+    } catch (error) {
+      logger.error('Error al finalizar mantenimiento:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // Subir foto de equipo
+  async uploadFotoEquipo(req: Request, res: Response) {
+    try {
+      const { equipoId } = req.params;
+      const {
+        nombre,
+        tipo,
+        observaciones,
+        tags,
+        esPublica = true,
+        mantenimientoId,
+        usuarioId,
+        latitud,
+        longitud
+      } = req.body;
+
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: 'No se ha proporcionado ningún archivo'
+        });
+      }
+
+      const equipoRepository = AppDataSource.getRepository(Equipo);
+      const fotoRepository = AppDataSource.getRepository(FotoEquipo);
+
+      const equipo = await equipoRepository.findOne({
+        where: { id: parseInt(equipoId) }
+      });
+
+      if (!equipo) {
+        return res.status(404).json({
+          success: false,
+          message: 'Equipo no encontrado'
+        });
+      }
+
+      // Subir archivo a almacenamiento en la nube
+      const uploadResult = await uploadToCloudStorage(req.file, 'equipos');
+
+      // Crear registro de foto
+      const foto = new FotoEquipo();
+      foto.equipoId = equipo.id;
+      foto.nombre = nombre || req.file.originalname;
+      foto.tipo = tipo || 'estado';
+      foto.url = uploadResult.url;
+      foto.thumbnail = uploadResult.thumbnailUrl;
+      foto.observaciones = observaciones;
+      foto.tags = Array.isArray(tags) ? tags : (tags ? tags.split(',') : []);
+      foto.esPublica = esPublica;
+      foto.mantenimientoId = mantenimientoId ? parseInt(mantenimientoId) : null;
+      foto.usuarioId = usuarioId;
+      foto.latitud = latitud;
+      foto.longitud = longitud;
+      foto.fechaCaptura = new Date();
+      foto.metadata = {
+        tamano: req.file.size,
+        formato: req.file.mimetype,
+        nombreOriginal: req.file.originalname
+      };
+
+      const fotoGuardada = await fotoRepository.save(foto);
+
+      logger.info(`Foto subida para equipo ${equipoId}`, {
+        fotoId: fotoGuardada.id,
+        tipo,
+        usuarioId
+      });
+
+      res.status(201).json({
+        success: true,
+        message: 'Foto subida correctamente',
+        data: fotoGuardada
+      });
+
+    } catch (error) {
+      logger.error('Error al subir foto:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // Obtener métricas de dashboard
+  async getDashboardMetrics(req: Request, res: Response) {
+    try {
+      const {
+        fechaInicio,
+        fechaFin,
+        tipo,
+        ubicacion,
+        incluirTendencias = true
+      } = req.query;
+
+      const equipoRepository = AppDataSource.getRepository(Equipo);
+      const mantenimientoRepository = AppDataSource.getRepository(MantenimientoEquipo);
+      const alertaRepository = AppDataSource.getRepository(AlertaEquipo);
+
+      // Filtros base
+      let whereConditions: any = {};
+      if (tipo) whereConditions.tipo = tipo;
+      if (ubicacion) whereConditions.ubicacion = { $like: `%${ubicacion}%` };
+
+      // Obtener equipos
+      const equipos = await equipoRepository.find({
+        where: whereConditions,
+        relations: ['mantenimientos', 'alertas', 'fotos']
+      });
+
+      // Calcular métricas generales
+      const metricas = {
+        totalEquipos: equipos.length,
+        equiposOperativos: equipos.filter(e => e.estado === 'operativo').length,
+        equiposMantenimiento: equipos.filter(e => e.estado === 'mantenimiento').length,
+        equiposFueraServicio: equipos.filter(e => e.estado === 'fuera_servicio').length,
+        
+        // Métricas de disponibilidad
+        disponibilidadPromedio: 0,
+        mtbfPromedio: 0,
+        mttrPromedio: 0,
+        
+        // Alertas
+        alertasActivas: 0,
+        alertasCriticas: 0,
+        
+        // Mantenimientos
+        mantenimientosPendientes: 0,
+        mantenimientosVencidos: 0,
+        
+        // Costos
+        costoMantenimientoTotal: 0,
+        costoPromedioPorEquipo: 0,
+        
+        // Garantías
+        garantiasVencidas: 0,
+        garantiasPorVencer: 0
+      };
+
+      // Calcular métricas detalladas
+      let disponibilidadTotal = 0;
+      let mtbfTotal = 0;
+      let mttrTotal = 0;
+      let costoTotal = 0;
+
+      for (const equipo of equipos) {
+        // Calcular métricas individuales
+        const disponibilidad = await calculateDisponibilidad(equipo.id, fechaInicio as string, fechaFin as string);
+        const mtbf = await calculateMTBF(equipo.id);
+        const mttr = await calculateMTTR(equipo.id);
+
+        disponibilidadTotal += disponibilidad;
+        mtbfTotal += mtbf;
+        mttrTotal += mttr;
+
+        // Contar alertas
+        const alertasActivas = equipo.alertas?.filter(a => !a.fechaResolucion) || [];
+        metricas.alertasActivas += alertasActivas.length;
+        metricas.alertasCriticas += alertasActivas.filter(a => a.severidad === 'critica').length;
+
+        // Contar mantenimientos
+        const mantenimientosPendientes = equipo.mantenimientos?.filter(m => 
+          m.estado === 'programado' && new Date(m.fechaProgramada) <= new Date()
+        ) || [];
+        metricas.mantenimientosPendientes += mantenimientosPendientes.length;
+
+        const mantenimientosVencidos = equipo.mantenimientos?.filter(m => 
+          m.estado === 'programado' && new Date(m.fechaProgramada) < new Date()
+        ) || [];
+        metricas.mantenimientosVencidos += mantenimientosVencidos.length;
+
+        // Calcular costos
+        const costoEquipo = equipo.mantenimientos?.reduce((total, m) => total + (m.costo || 0), 0) || 0;
+        costoTotal += costoEquipo;
+
+        // Verificar garantías
+        if (equipo.fechaVencimientoGarantia) {
+          const diasRestantes = Math.ceil(
+            (new Date(equipo.fechaVencimientoGarantia).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+          );
+          
+          if (diasRestantes < 0) {
+            metricas.garantiasVencidas++;
+          } else if (diasRestantes <= 30) {
+            metricas.garantiasPorVencer++;
+          }
+        }
+      }
+
+      // Promedios
+      if (equipos.length > 0) {
+        metricas.disponibilidadPromedio = disponibilidadTotal / equipos.length;
+        metricas.mtbfPromedio = mtbfTotal / equipos.length;
+        metricas.mttrPromedio = mttrTotal / equipos.length;
+        metricas.costoPromedioPorEquipo = costoTotal / equipos.length;
+      }
+      metricas.costoMantenimientoTotal = costoTotal;
+
+      // Obtener datos de tendencias si se solicita
+      let tendencias = null;
+      if (incluirTendencias === 'true') {
+        tendencias = await this.calcularTendencias(fechaInicio as string, fechaFin as string);
+      }
+
+      res.json({
+        success: true,
+        data: {
+          metricas,
+          tendencias,
+          ultimaActualizacion: new Date()
+        }
+      });
+
+    } catch (error) {
+      logger.error('Error al obtener métricas de dashboard:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor'
+      });
+    }
+  }
+
+  // Métodos auxiliares privados
+  private async calcularMetricasEquipo(equipoId: number) {
+    try {
+      const disponibilidad = await calculateDisponibilidad(equipoId);
+      const mtbf = await calculateMTBF(equipoId);
+      const mttr = await calculateMTTR(equipoId);
+
+      return {
+        disponibilidad,
+        mtbf,
+        mttr,
+        fechaCalculo: new Date()
+      };
+    } catch (error) {
+      logger.error(`Error al calcular métricas para equipo ${equipoId}:`, error);
+      return {
+        disponibilidad: 0,
+        mtbf: 0,
+        mttr: 0,
+        fechaCalculo: new Date()
+      };
+    }
+  }
+
+  private async getHistorialUbicaciones(equipoId: number) {
+    const trackingRepository = AppDataSource.getRepository(EquipoTracking);
+    
+    return await trackingRepository.find({
+      where: { equipoId },
+      order: { fechaRegistro: 'DESC' },
+      take: 50 // Últimas 50 ubicaciones
+    });
+  }
+
+  private calcularDistancia(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371e3; // Radio de la Tierra en metros
+    const φ1 = lat1 * Math.PI / 180;
+    const φ2 = lat2 * Math.PI / 180;
+    const Δφ = (lat2 - lat1) * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+    const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+              Math.cos(φ1) * Math.cos(φ2) *
+              Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
+  }
+
+  private async crearAlertaUbicacion(equipo: Equipo, tracking: EquipoTracking, distancia: number) {
+    const alertaRepository = AppDataSource.getRepository(AlertaEquipo);
+    
+    const alerta = new AlertaEquipo();
+    alerta.equipoId = equipo.id;
+    alerta.tipo = 'ubicacion';
+    alerta.severidad = 'alta';
+    alerta.titulo = 'Equipo fuera de zona autorizada';
+    alerta.descripcion = `El equipo ${equipo.nombre} se encuentra a ${Math.round(distancia)}m de su zona autorizada`;
+    alerta.latitud = tracking.latitud;
+    alerta.longitud = tracking.longitud;
+    alerta.fechaCreacion = new Date();
+
+    await alertaRepository.save(alerta);
+
+    // Enviar notificación push
+    if (equipo.usuarioResponsableId) {
+      await sendPushNotification(equipo.usuarioResponsableId, {
+        title: 'Alerta de Ubicación',
+        body: alerta.descripcion,
+        data: {
+          type: 'alerta_ubicacion',
+          equipoId: equipo.id.toString(),
+          alertaId: alerta.id.toString()
+        }
+      });
+    }
+  }
+
+  private async recalcularMetricasEquipo(equipoId: number) {
+    try {
+      const metricas = await this.calcularMetricasEquipo(equipoId);
+      
+      // Aquí podrías guardar las métricas en una tabla separada si necesitas histórico
+      logger.info(`Métricas recalculadas para equipo ${equipoId}`, metricas);
+      
+      return metricas;
+    } catch (error) {
+      logger.error(`Error al recalcular métricas para equipo ${equipoId}:`, error);
+      throw error;
+    }
+  }
+
+  private async calcularTendencias(fechaInicio?: string, fechaFin?: string) {
+    // Implementar cálculo de tendencias históricas
+    // Por ahora retornamos datos mock
+    return {
+      disponibilidad: [
+        { fecha: '2024-03-01', valor: 92.1 },
+        { fecha: '2024-03-02', valor: 91.8 },
+        { fecha: '2024-03-03', valor: 93.5 },
+        { fecha: '2024-03-04', valor: 94.2 },
+        { fecha: '2024-03-05', valor: 89.7 },
+        { fecha: '2024-03-06', valor: 91.3 },
+        { fecha: '2024-03-07', valor: 93.8 }
+      ],
+      mantenimientos: [
+        { fecha: '2024-03-01', preventivos: 2, correctivos: 1 },
+        { fecha: '2024-03-02', preventivos: 1, correctivos: 0 },
+        { fecha: '2024-03-03', preventivos: 3, correctivos: 2 },
+        { fecha: '2024-03-04', preventivos: 1, correctivos: 1 },
+        { fecha: '2024-03-05', preventivos: 2, correctivos: 3 },
+        { fecha: '2024-03-06', preventivos: 1, correctivos: 1 },
+        { fecha: '2024-03-07', preventivos: 2, correctivos: 0 }
+      ],
+      costos: [
+        { fecha: '2024-03-01', preventivo: 15000, correctivo: 8500 },
+        { fecha: '2024-03-02', preventivo: 12000, correctivo: 0 },
+        { fecha: '2024-03-03', preventivo: 18500, correctivo: 25000 },
+        { fecha: '2024-03-04', preventivo: 9500, correctivo: 12000 },
+        { fecha: '2024-03-05', preventivo: 22000, correctivo: 35000 },
+        { fecha: '2024-03-06', preventivo: 11000, correctivo: 8000 },
+        { fecha: '2024-03-07', preventivo: 16500, correctivo: 0 }
+      ]
+    };
+  }
+}
+
+export default new EquipoTrackingController();
